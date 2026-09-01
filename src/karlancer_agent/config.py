@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr
     telegram_chat_id: int
     browser_profile_dir: Path = Path("/data/browser-profile")
+    browser_headless: bool = False
 
     @property
     def real_submission_allowed(self) -> bool:

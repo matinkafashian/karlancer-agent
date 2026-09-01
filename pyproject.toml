@@ -9,9 +9,11 @@ dependencies = [
     "asyncpg>=0.30",
     "beautifulsoup4>=4.12",
     "fastapi>=0.115",
+    "filelock>=3.16",
     "httpx>=0.28",
     "lxml>=5.3",
     "pydantic-settings>=2.7",
+    "playwright>=1.50",
     "sqlalchemy[asyncio]>=2.0",
 ]
 
