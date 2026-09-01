@@ -31,15 +31,12 @@ def project() -> ExtractedProject:
 def valid_core(*, questions: tuple[str, ...] = ()) -> ProposalCore:
     return ProposalCore(
         project_understanding=(
-            "برای این ربات تلگرام، دریافت مطمئن پیام‌ها از طریق وب‌هوک، نگهداری اطلاعات "
-            "کاربران و ثبت رویدادها در پایگاه داده مهم است تا سرویس بعد از قطعی یا راه‌اندازی "
-            "دوباره هم بدون ازدست‌رفتن اطلاعات ادامه دهد."
+            "برای این ربات تلگرام، پیام‌ها با وب‌هوک دریافت و اطلاعات کاربران در PostgreSQL "
+            "ذخیره می‌شود تا پس از راه‌اندازی دوباره داده‌ای از بین نرود."
         ),
         technical_approach=(
-            "پیاده‌سازی را با پایتون و ساختار ماژولار انجام می‌دهم؛ مسیرهای وب‌هوک، منطق "
-            "پردازش پیام و لایه دسترسی به PostgreSQL جدا می‌شوند و سناریوهای اصلی نیز تست "
-            "خواهند شد. در پایان، تنظیمات اجرا و راهنمای استقرار را تحویل می‌دهم تا نگهداری "
-            "و توسعه قابلیت‌های بعدی ربات ساده باشد."
+            "کار را با پایتون و ساختار ماژولار انجام می‌دهم؛ پردازش پیام و پایگاه داده جدا "
+            "خواهند بود. مسیرهای تست و راهنمای استقرار همراه کد تحویل می‌شود."
         ),
         questions=questions,
     )
@@ -98,6 +95,7 @@ def test_generator_preserves_the_user_approved_identity_and_portfolio_text() -> 
     )
     assert draft.body.startswith(f"{approved_intro}\n\n")
     assert draft.body.endswith(f"\n\n{approved_outro}")
+    assert len(draft.body.split()) <= 210
 
 
 def test_generator_adds_only_the_questions_supplied_by_analysis() -> None:

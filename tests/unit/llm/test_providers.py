@@ -123,9 +123,12 @@ async def test_provider_contract_analyzes_to_domain_result(provider_kind: str) -
 async def test_provider_contract_drafts_only_structured_middle(provider_kind: str) -> None:
     calls = 0
 
-    async def handler(_: httpx.Request) -> httpx.Response:
+    async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
+        if calls == 2:
+            body = __import__("json").loads(request.content)
+            assert "45-70 Persian words" in body["messages"][0]["content"]
         payload = ANALYSIS if calls == 1 else DRAFT
         return httpx.Response(200, json=response_for(provider_kind, payload))
 

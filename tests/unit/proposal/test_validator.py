@@ -32,15 +32,12 @@ def project() -> ExtractedProject:
 def valid_core() -> ProposalCore:
     return ProposalCore(
         project_understanding=(
-            "برای این ربات تلگرام، دریافت مطمئن پیام‌ها از طریق وب‌هوک، نگهداری اطلاعات "
-            "کاربران و ثبت رویدادها در پایگاه داده مهم است تا سرویس بعد از قطعی یا راه‌اندازی "
-            "دوباره هم بدون ازدست‌رفتن اطلاعات ادامه دهد."
+            "برای این ربات تلگرام، پیام‌ها با وب‌هوک دریافت و اطلاعات کاربران در PostgreSQL "
+            "ذخیره می‌شود تا پس از راه‌اندازی دوباره داده‌ای از بین نرود."
         ),
         technical_approach=(
-            "پیاده‌سازی را با پایتون و ساختار ماژولار انجام می‌دهم؛ مسیرهای وب‌هوک، منطق "
-            "پردازش پیام و لایه دسترسی به PostgreSQL جدا می‌شوند و سناریوهای اصلی نیز تست "
-            "خواهند شد. در پایان، تنظیمات اجرا و راهنمای استقرار را تحویل می‌دهم تا نگهداری "
-            "و توسعه قابلیت‌های بعدی ربات ساده باشد."
+            "کار را با پایتون و ساختار ماژولار انجام می‌دهم؛ پردازش پیام و پایگاه داده جدا "
+            "خواهند بود. مسیرهای تست و راهنمای استقرار همراه کد تحویل می‌شود."
         ),
         questions=(),
     )
@@ -64,7 +61,7 @@ def test_approved_proposal_is_valid_and_middle_has_target_length() -> None:
 
     assert result.is_valid is True
     assert result.issues == ()
-    assert 70 <= result.middle_word_count <= 130
+    assert 55 <= result.middle_word_count <= 80
 
 
 @pytest.mark.parametrize(
@@ -142,6 +139,21 @@ def test_repeated_middle_paragraph_is_rejected() -> None:
     body = valid_body().replace(repeated, f"{repeated}\n\n{repeated}")
 
     assert "repeated_content" in issue_codes(body)
+
+
+def test_one_long_generic_paragraph_cannot_replace_understanding_and_approach() -> None:
+    one_paragraph = (
+        "برای ربات تلگرام با پایتون، همه مراحل تحلیل نیاز، طراحی، توسعه، بررسی، آزمون، "
+        "تحویل، اجرا، نگهداری و مستندسازی در یک مسیر منظم انجام می‌شود تا نتیجه نهایی "
+        "قابل استفاده باشد و تمام بخش‌ها به شکل دقیق کنترل شوند. همچنین روند کار مرحله "
+        "به مرحله بررسی می‌شود و تنظیمات لازم، راهنمای اجرا، توضیحات فنی و فایل‌های مورد "
+        "نیاز همراه نتیجه نهایی در اختیار کارفرما قرار می‌گیرد تا ادامه کار ساده باشد."
+    )
+    body = (
+        f"{FIXED_INTRO}\n\n{one_paragraph}\n\n{PRICE_SENTENCE}\n\n{FIXED_OUTRO}"
+    )
+
+    assert "middle_structure" in issue_codes(body)
 
 
 def test_middle_without_project_specific_term_is_rejected() -> None:

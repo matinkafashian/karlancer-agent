@@ -164,7 +164,9 @@ def _draft_messages(
             "role": "system",
             "content": (
                 "Write only the project-specific middle of a Persian proposal. Be natural, "
-                "precise, and concise. Include at most two genuinely necessary questions. "
+                "precise, and concise. Keep project understanding and technical approach "
+                "together within 45-70 Persian words. Include at most two genuinely necessary "
+                "questions. "
                 "Do not add greetings, biography, links, phone numbers, or messaging IDs."
             ),
         },

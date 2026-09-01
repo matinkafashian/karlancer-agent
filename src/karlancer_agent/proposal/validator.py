@@ -9,8 +9,8 @@ from karlancer_agent.classification.rules import normalize_text
 from karlancer_agent.domain.models import ExtractedProject
 from karlancer_agent.proposal.templates import FIXED_INTRO, FIXED_OUTRO, PRICE_SENTENCE
 
-MIN_MIDDLE_WORDS = 70
-MAX_MIDDLE_WORDS = 130
+MIN_MIDDLE_WORDS = 55
+MAX_MIDDLE_WORDS = 80
 
 BANNED_CLICHES = (
     "پروژه کاملاً شدنی است",
@@ -86,6 +86,13 @@ class ProposalValidator:
 
         if middle.count(PRICE_SENTENCE) != 1:
             issues.append(_issue("price_sentence", "جمله مصوب مبلغ و زمان وجود ندارد"))
+        if not _has_required_middle_structure(middle):
+            issues.append(
+                _issue(
+                    "middle_structure",
+                    "برداشت از نیاز و مسیر فنی باید هر دو توضیح کافی داشته باشند",
+                )
+            )
         if len(re.findall(r"[؟?]", middle)) > 2:
             issues.append(_issue("too_many_questions", "بیش از دو سؤال در پیشنهاد آمده است"))
         normalized_middle = normalize_text(middle)
@@ -149,6 +156,16 @@ def _has_repeated_paragraph(value: str) -> bool:
         if len(_words(item)) >= 5 and item.strip() != PRICE_SENTENCE
     ]
     return len(paragraphs) != len(set(paragraphs))
+
+
+def _has_required_middle_structure(value: str) -> bool:
+    before_price = value.split(PRICE_SENTENCE, maxsplit=1)[0]
+    paragraphs = [
+        item.strip() for item in re.split(r"\n\s*\n", before_price) if item.strip()
+    ]
+    return len(paragraphs) >= 2 and all(
+        len(_words(item)) >= 12 for item in paragraphs[:2]
+    )
 
 
 def _is_project_relevant(value: str, project: ExtractedProject) -> bool:
