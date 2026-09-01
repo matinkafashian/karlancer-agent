@@ -1,0 +1,241 @@
+version: "1.0.0"
+
+positive:
+  python_automation:
+    strong:
+      - python
+      - پایتون
+      - web scraping
+      - وب اسکرپینگ
+      - اسکرپینگ
+      - خزش وب
+      - selenium
+      - playwright
+    standard:
+      - automation
+      - اتوماسیون
+      - backend
+      - بک اند
+      - pandas
+      - fastapi
+      - django
+      - flask
+
+  api_integration:
+    strong:
+      - rest api
+      - api development
+      - توسعه api
+      - پیاده سازی api
+      - وب سرویس
+      - webhook
+    standard:
+      - api
+      - sdk
+      - اتصال api
+      - یکپارچه سازی api
+
+  machine_learning:
+    strong:
+      - machine learning
+      - یادگیری ماشین
+      - data science
+      - علم داده
+      - scikit learn
+      - sklearn
+    standard:
+      - ml
+      - classification model
+      - regression model
+      - مدل طبقه بندی
+      - مدل رگرسیون
+
+  deep_learning:
+    strong:
+      - deep learning
+      - یادگیری عمیق
+      - neural network
+      - neural networks
+      - شبکه عصبی
+      - pytorch
+      - tensorflow
+      - keras
+    standard:
+      - transformer model
+      - مدل ترنسفورمر
+
+  computer_vision:
+    strong:
+      - computer vision
+      - بینایی ماشین
+      - opencv
+      - yolo
+      - object detection
+      - تشخیص اشیا
+      - image processing
+      - پردازش تصویر
+      - video processing
+      - پردازش ویدئو
+    standard:
+      - segmentation
+      - قطعه بندی تصویر
+      - ocr
+      - تشخیص چهره
+
+  nlp_speech:
+    strong:
+      - nlp
+      - natural language processing
+      - پردازش زبان طبیعی
+      - speech recognition
+      - تشخیص گفتار
+      - تبدیل گفتار به متن
+      - text to speech
+      - تبدیل متن به گفتار
+    standard:
+      - text classification
+      - طبقه بندی متن
+      - sentiment analysis
+      - تحلیل احساسات
+
+  llm_rag:
+    strong:
+      - llm
+      - large language model
+      - مدل زبانی بزرگ
+      - rag
+      - retrieval augmented generation
+      - بازیابی تقویت شده
+      - vector database
+      - پایگاه داده برداری
+      - qdrant
+      - chromadb
+      - pinecone
+      - langchain
+      - llamaindex
+    standard:
+      - embedding
+      - embeddings
+      - امبدینگ
+      - semantic search
+      - جستجوی معنایی
+
+  ai_agents:
+    strong:
+      - ai agent
+      - ai agents
+      - agentic ai
+      - agentic workflow
+      - عامل هوشمند
+      - ایجنت هوش مصنوعی
+      - multi agent
+      - چند عاملی
+      - tool calling
+      - فراخوانی ابزار
+    standard:
+      - function calling
+      - workflow agent
+
+  mlops:
+    strong:
+      - mlops
+      - model serving
+      - استقرار مدل
+      - model monitoring
+      - پایش مدل
+    standard:
+      - model registry
+      - feature store
+
+  messenger_bots:
+    strong:
+      - telegram bot
+      - ربات تلگرام
+      - whatsapp bot
+      - ربات واتساپ
+      - bale bot
+      - ربات بله
+      - rubika bot
+      - ربات روبیکا
+      - eitaa bot
+      - ربات ایتا
+      - gap bot
+      - ربات گپ
+      - soroush bot
+      - ربات سروش
+      - discord bot
+      - ربات دیسکورد
+      - پیام رسان bot
+      - ربات پیام رسان
+    standard:
+      - telethon
+      - aiogram
+      - python telegram bot
+
+hard_negative:
+  tool_only_video:
+    - ادیت ویدئو
+    - ادیت ویدیو
+    - تدوین ویدئو
+    - تدوین ویدیو
+    - ادیت کلیپ
+    - ساخت کلیپ
+    - video editing
+    - video editor
+  tool_only_visual:
+    - ساخت کاراکتر
+    - طراحی کاراکتر
+    - ساخت آواتار
+    - طراحی تصویر
+    - تولید تصویر
+    - طراحی گرافیکی
+    - فتوشاپ
+    - character design
+    - image generation
+  content_operation:
+    - تولید محتوا
+    - اپراتوری chatgpt
+    - کار با chatgpt
+    - مقاله نویسی
+    - content creation
+    - prompt operator
+  non_programming_language:
+    - ترجمه مقاله
+    - ترجمه کتاب
+    - ترجمه و ویراستاری
+    - ویراستاری متن
+    - article translation
+  manual_data_work:
+    - ورود اطلاعات
+    - ثبت دستی محصول
+    - data entry
+    - annotation دستی
+    - برچسب گذاری دستی
+    - manual annotation
+  social_admin:
+    - ادمین تلگرام
+    - ادمین اینستاگرام
+    - پاسخ گویی به کاربران
+    - social media admin
+  explicit_no_code:
+    - بدون برنامه نویسی
+    - بدون کدنویسی
+    - no coding
+
+programming_markers:
+  - python
+  - پایتون
+  - برنامه نویسی
+  - کدنویسی
+  - programming
+  - code
+  - backend
+  - بک اند
+  - api development
+  - توسعه api
+  - پیاده سازی api
+  - webhook
+  - sdk
+  - ffmpeg
+  - opencv
+  - docker

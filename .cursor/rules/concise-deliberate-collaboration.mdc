@@ -12,3 +12,7 @@ alwaysApply: true
 - Ask the user a concise question before acting when uncertainty could materially change the result.
 - Make reasonable assumptions only when they are low-risk, reversible, and explicitly stated.
 - Treat explicit user instructions as fixed requirements while still flagging genuine technical limitations.
+- Execute substantial work in small, independently verifiable stages; complete and verify the current stage before advancing.
+- Request user approval at material checkpoints such as architecture, generated-message style, live-site behavior, assisted sending, and automatic sending.
+- Do not interrupt progress for routine, reversible implementation details that are already covered by the approved design.
+- Balance care with practicality: investigate meaningful uncertainty and risk, but avoid perfectionism that does not improve the result.

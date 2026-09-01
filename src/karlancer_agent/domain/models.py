@@ -66,12 +66,14 @@ class AnalysisResult(DomainModel):
 
     decision: AnalysisDecision
     confidence: float = Field(ge=0, le=1)
+    category: str | None = None
     programming_deliverable: str | None
     matched_domains: tuple[str, ...] = ()
     hard_negative: str | None
     ambiguities: tuple[str, ...] = ()
     recommended_questions: tuple[str, ...] = Field(default=(), max_length=2)
     reason: str = Field(min_length=1)
+    technical_approach: str | None = None
 
 
 class ProposalDraft(DomainModel):
