@@ -40,12 +40,15 @@ class ExtractedProject(DomainModel):
     title: str = Field(min_length=1)
     description: str = Field(min_length=1)
     skills: tuple[str, ...] = ()
+    budget_text: str = Field(min_length=1)
     budget_min: Decimal = Field(ge=0)
     budget_max: Decimal = Field(ge=0)
     currency: str = Field(min_length=1)
+    duration_text: str = Field(min_length=1)
     duration_value: Decimal = Field(gt=0)
     duration_unit: str = Field(min_length=1)
     is_open: bool
+    already_submitted: bool = False
     employer_display_id: str | None = None
     proposal_form_url: AnyHttpUrl
 
