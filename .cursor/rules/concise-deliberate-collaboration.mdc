@@ -1,0 +1,14 @@
+---
+description: Keep responses concise, important, deliberate, and clarification-first
+alwaysApply: true
+---
+
+# Concise and Deliberate Collaboration
+
+- Lead with the decision, outcome, or architecture; omit generic background and repetition.
+- Include only details that materially affect correctness, cost, risk, implementation, or the next decision.
+- Prefer short cohesive sections and the minimum formatting needed for clarity.
+- Do not rush into implementation when a material requirement, account behavior, or user preference is ambiguous.
+- Ask the user a concise question before acting when uncertainty could materially change the result.
+- Make reasonable assumptions only when they are low-risk, reversible, and explicitly stated.
+- Treat explicit user instructions as fixed requirements while still flagging genuine technical limitations.
