@@ -1,15 +1,39 @@
 """Transactional repository operations that guard external side effects."""
 
-from typing import cast
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any, Literal, cast
 from uuid import UUID
 
-from sqlalchemy import CursorResult, or_, select, update
+from sqlalchemy import CursorResult, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from karlancer_agent.db.models import ProjectRow, ReplyEventRow, SubmissionRow
-from karlancer_agent.domain.enums import ProjectState
-from karlancer_agent.domain.models import ChannelProject, FirstReply
+from karlancer_agent.classification.rules import RuleAssessment
+from karlancer_agent.db.models import (
+    AnalysisRow,
+    ApprovalTokenRow,
+    OutboxEventRow,
+    ProjectRow,
+    ProposalDraftRow,
+    ReplyEventRow,
+    SourceCursorRow,
+    SubmissionRow,
+)
+from karlancer_agent.domain.enums import AnalysisDecision, ProjectState
+from karlancer_agent.domain.models import (
+    AnalysisResult,
+    ChannelProject,
+    ExtractedProject,
+    FirstReply,
+    ProposalDraft,
+)
+from karlancer_agent.proposal.validator import ProposalValidation
+
+ApprovalAction = Literal["approve", "reject"]
+ApprovalConsumeResult = Literal[
+    "approved", "rejected", "invalid", "wrong_project", "expired", "used", "state_conflict"
+]
 
 
 class ProjectRepository:
@@ -66,6 +90,464 @@ class ProjectRepository:
         async with self._sessions() as session, session.begin():
             result = cast(CursorResult[object], await session.execute(statement))
             return result.rowcount == 1
+
+    async def get_project(self, project_id: UUID) -> ProjectRow | None:
+        """Read one detached project record."""
+
+        async with self._sessions() as session:
+            return await session.get(ProjectRow, project_id)
+
+    async def list_shadow_pending(self) -> tuple[UUID, ...]:
+        """List unfinished read/analyze/draft work after a restart."""
+
+        states = (
+            ProjectState.DISCOVERED.value,
+            ProjectState.EXTRACT_PENDING.value,
+            ProjectState.EXTRACTED.value,
+            ProjectState.ELIGIBLE.value,
+        )
+        async with self._sessions() as session:
+            values = await session.scalars(
+                select(ProjectRow.id)
+                .where(ProjectRow.state.in_(states))
+                .order_by(ProjectRow.created_at, ProjectRow.id)
+            )
+            return tuple(values)
+
+    async def source_cursor(self, source: str) -> int | None:
+        """Return the last safely observed source message."""
+
+        async with self._sessions() as session:
+            value = await session.scalar(
+                select(SourceCursorRow.last_message_id).where(
+                    SourceCursorRow.source == source
+                )
+            )
+            return value
+
+    async def advance_source_cursor(self, source: str, message_id: int) -> None:
+        """Move a source cursor forward, never backward."""
+
+        async with self._sessions() as session, session.begin():
+            row = await session.get(SourceCursorRow, source)
+            if row is None:
+                session.add(SourceCursorRow(source=source, last_message_id=message_id))
+            elif message_id > row.last_message_id:
+                row.last_message_id = message_id
+
+    async def record_extraction(
+        self, project_id: UUID, extracted: ExtractedProject
+    ) -> bool:
+        """Persist trusted page data and advance the claimed project atomically."""
+
+        statement = (
+            update(ProjectRow)
+            .where(
+                ProjectRow.id == project_id,
+                ProjectRow.state == ProjectState.EXTRACT_PENDING.value,
+            )
+            .values(
+                karlancer_project_id=extracted.project_id,
+                canonical_project_url=str(extracted.canonical_url),
+                title=extracted.title,
+                extracted_data=extracted.model_dump(mode="json"),
+                state=ProjectState.EXTRACTED.value,
+                last_error=None,
+            )
+        )
+        async with self._sessions() as session, session.begin():
+            result = cast(CursorResult[object], await session.execute(statement))
+            return result.rowcount == 1
+
+    async def record_analysis(
+        self,
+        project_id: UUID,
+        *,
+        rules: RuleAssessment,
+        analysis: AnalysisResult,
+        provider: str,
+        model_name: str,
+        analysis_version: str,
+    ) -> bool:
+        """Store one semantic decision and its rule evidence atomically."""
+
+        target = {
+            AnalysisDecision.ELIGIBLE: ProjectState.ELIGIBLE,
+            AnalysisDecision.REJECTED: ProjectState.REJECTED,
+            AnalysisDecision.NEEDS_REVIEW: ProjectState.NEEDS_REVIEW,
+        }[analysis.decision]
+        async with self._sessions() as session, session.begin():
+            result = cast(
+                CursorResult[object],
+                await session.execute(
+                    update(ProjectRow)
+                    .where(
+                        ProjectRow.id == project_id,
+                        ProjectRow.state == ProjectState.EXTRACTED.value,
+                    )
+                    .values(state=target.value)
+                ),
+            )
+            if result.rowcount != 1:
+                return False
+            session.add(
+                AnalysisRow(
+                    project_id=project_id,
+                    rule_score=rules.score,
+                    decision=analysis.decision.value,
+                    confidence=Decimal(str(analysis.confidence)),
+                    reasons={
+                        "analysis": analysis.model_dump(mode="json"),
+                        "rules": rules.model_dump(mode="json"),
+                    },
+                    provider=provider,
+                    model_name=model_name,
+                    analysis_version=analysis_version,
+                )
+            )
+            return True
+
+    async def latest_analysis(self, project_id: UUID) -> AnalysisResult | None:
+        """Rehydrate the most recent structured analysis."""
+
+        async with self._sessions() as session:
+            row = await session.scalar(
+                select(AnalysisRow)
+                .where(AnalysisRow.project_id == project_id)
+                .order_by(AnalysisRow.created_at.desc(), AnalysisRow.id.desc())
+                .limit(1)
+            )
+        if row is None:
+            return None
+        payload = row.reasons.get("analysis")
+        return AnalysisResult.model_validate(payload) if isinstance(payload, dict) else None
+
+    async def record_draft(
+        self,
+        project_id: UUID,
+        *,
+        draft: ProposalDraft,
+        validation: ProposalValidation,
+    ) -> bool:
+        """Persist an immutable draft and final shadow state in one transaction."""
+
+        target = ProjectState.DRAFTED if validation.is_valid else ProjectState.NEEDS_REVIEW
+        async with self._sessions() as session, session.begin():
+            result = cast(
+                CursorResult[object],
+                await session.execute(
+                    update(ProjectRow)
+                    .where(
+                        ProjectRow.id == project_id,
+                        ProjectRow.state == ProjectState.ELIGIBLE.value,
+                    )
+                    .values(state=target.value)
+                ),
+            )
+            if result.rowcount != 1:
+                return False
+            latest_version = await session.scalar(
+                select(func.max(ProposalDraftRow.version)).where(
+                    ProposalDraftRow.project_id == project_id
+                )
+            )
+            session.add(
+                ProposalDraftRow(
+                    project_id=project_id,
+                    body=draft.body,
+                    validator_result=validation.model_dump(mode="json"),
+                    version=(latest_version or 0) + 1,
+                )
+            )
+            return True
+
+    async def project_view(self, project_id: UUID) -> dict[str, Any] | None:
+        """Return a sanitized API projection without secrets or browser state."""
+
+        async with self._sessions() as session:
+            row = await session.get(ProjectRow, project_id)
+            if row is None:
+                return None
+            analysis = await session.scalar(
+                select(AnalysisRow)
+                .where(AnalysisRow.project_id == project_id)
+                .order_by(AnalysisRow.created_at.desc(), AnalysisRow.id.desc())
+                .limit(1)
+            )
+            draft = await session.scalar(
+                select(ProposalDraftRow)
+                .where(ProposalDraftRow.project_id == project_id)
+                .order_by(ProposalDraftRow.version.desc())
+                .limit(1)
+            )
+            return {
+                "id": str(row.id),
+                "state": row.state,
+                "title": row.title,
+                "project_url": row.canonical_project_url,
+                "extracted": row.extracted_data,
+                "analysis": analysis.reasons.get("analysis") if analysis else None,
+                "draft": draft.body if draft else None,
+            }
+
+    async def ping(self) -> bool:
+        """Check database connectivity for readiness without changing state."""
+
+        async with self._sessions() as session:
+            return bool(await session.scalar(select(1)))
+
+    async def prepare_assisted_review(
+        self,
+        project_id: UUID,
+        *,
+        approval_id: UUID,
+        token_hash: str,
+        expires_at: datetime,
+        notification_key: str,
+        issued_at: datetime,
+    ) -> bool:
+        """Move a valid draft into assisted review and enqueue one report."""
+
+        async with self._sessions() as session, session.begin():
+            existing = await session.scalar(
+                select(OutboxEventRow).where(
+                    OutboxEventRow.deduplication_key == notification_key
+                )
+            )
+            if existing is not None:
+                payload_project = existing.payload.get("project_id")
+                if payload_project != str(project_id):
+                    raise ValueError("notification key belongs to another project")
+                return False
+
+            project = await session.get(ProjectRow, project_id)
+            if project is None:
+                raise LookupError(f"project {project_id} was not found")
+            if project.state not in {
+                ProjectState.DRAFTED.value,
+                ProjectState.AWAITING_APPROVAL.value,
+            }:
+                raise ValueError("project is not ready for assisted review")
+
+            draft = await session.scalar(
+                select(ProposalDraftRow)
+                .where(ProposalDraftRow.project_id == project_id)
+                .order_by(ProposalDraftRow.version.desc())
+                .limit(1)
+            )
+            if draft is None or not bool(draft.validator_result.get("is_valid")):
+                raise ValueError("latest proposal draft is not valid")
+
+            if project.state == ProjectState.AWAITING_APPROVAL.value:
+                await session.execute(
+                    update(ApprovalTokenRow)
+                    .where(
+                        ApprovalTokenRow.project_id == project_id,
+                        ApprovalTokenRow.used_at.is_(None),
+                    )
+                    .values(used_at=issued_at)
+                )
+            else:
+                project.state = ProjectState.AWAITING_APPROVAL.value
+            session.add(
+                ApprovalTokenRow(
+                    id=approval_id,
+                    project_id=project_id,
+                    token_hash=token_hash,
+                    expires_at=expires_at,
+                )
+            )
+            session.add(
+                OutboxEventRow(
+                    event_type="assisted_review",
+                    deduplication_key=notification_key,
+                    payload={
+                        "project_id": str(project_id),
+                        "approval_id": str(approval_id),
+                        "draft_version": draft.version,
+                    },
+                )
+            )
+            return True
+
+    async def assisted_report_data(self, notification_key: str) -> dict[str, Any] | None:
+        """Load a queued report; raw approval tokens are never persisted."""
+
+        async with self._sessions() as session:
+            event = await session.scalar(
+                select(OutboxEventRow).where(
+                    OutboxEventRow.deduplication_key == notification_key
+                )
+            )
+            if event is None:
+                return None
+            project_id = UUID(cast(str, event.payload["project_id"]))
+            approval_id = UUID(cast(str, event.payload["approval_id"]))
+            draft_version = int(cast(int, event.payload["draft_version"]))
+            project = await session.get(ProjectRow, project_id)
+            approval = await session.get(ApprovalTokenRow, approval_id)
+            draft = await session.scalar(
+                select(ProposalDraftRow).where(
+                    ProposalDraftRow.project_id == project_id,
+                    ProposalDraftRow.version == draft_version,
+                )
+            )
+            analysis = await session.scalar(
+                select(AnalysisRow)
+                .where(AnalysisRow.project_id == project_id)
+                .order_by(AnalysisRow.created_at.desc(), AnalysisRow.id.desc())
+                .limit(1)
+            )
+            if project is None or approval is None or draft is None:
+                raise RuntimeError("assisted review outbox references missing data")
+            extracted = project.extracted_data or {}
+            analysis_payload = analysis.reasons.get("analysis", {}) if analysis else {}
+            return {
+                "project_id": project_id,
+                "approval_id": approval_id,
+                "title": project.title,
+                "reason": analysis_payload.get(
+                    "reason", "پیش‌نویس معتبر و آمادهٔ بررسی دستی است."
+                ),
+                "budget": extracted.get("budget_text", "نامشخص"),
+                "duration": extracted.get("duration_text", "نامشخص"),
+                "draft_body": draft.body,
+                "project_url": project.canonical_project_url,
+                "state": project.state,
+                "delivered": event.delivered,
+            }
+
+    async def mark_notification_delivered(
+        self, notification_key: str, *, delivered_at: datetime
+    ) -> bool:
+        """Complete one outbox record without allowing a second successful send."""
+
+        statement = (
+            update(OutboxEventRow)
+            .where(
+                OutboxEventRow.deduplication_key == notification_key,
+                OutboxEventRow.delivered.is_(False),
+            )
+            .values(delivered=True, delivered_at=delivered_at)
+        )
+        async with self._sessions() as session, session.begin():
+            result = cast(CursorResult[object], await session.execute(statement))
+            return result.rowcount == 1
+
+    async def consume_approval(
+        self,
+        project_id: UUID,
+        *,
+        approval_id: UUID,
+        token_hash: str,
+        action: ApprovalAction,
+        now: datetime,
+    ) -> ApprovalConsumeResult:
+        """Consume one approval capability and apply its guarded transition."""
+
+        async with self._sessions() as session, session.begin():
+            token = await session.get(ApprovalTokenRow, approval_id)
+            if token is None or token.token_hash != token_hash:
+                return "invalid"
+            if token.project_id != project_id:
+                return "wrong_project"
+            if token.used_at is not None:
+                return "used"
+            if _as_utc(token.expires_at) <= _as_utc(now):
+                return "expired"
+            project = await session.get(ProjectRow, project_id)
+            if project is None or project.state != ProjectState.AWAITING_APPROVAL.value:
+                return "state_conflict"
+
+            if action == "approve":
+                draft = await session.scalar(
+                    select(ProposalDraftRow)
+                    .where(ProposalDraftRow.project_id == project_id)
+                    .order_by(ProposalDraftRow.version.desc())
+                    .limit(1)
+                )
+                if draft is None:
+                    return "state_conflict"
+                token.used_at = now
+                project.state = ProjectState.SUBMIT_PENDING.value
+                draft.approved_at = now
+                return "approved"
+            token.used_at = now
+            project.state = ProjectState.REJECTED.value
+            return "rejected"
+
+    async def replace_assisted_draft(
+        self,
+        project_id: UUID,
+        *,
+        body: str,
+        validation: ProposalValidation,
+        approval_id: UUID,
+        token_hash: str,
+        expires_at: datetime,
+        notification_key: str,
+        now: datetime,
+    ) -> bool:
+        """Store one validated human edit and issue a fresh assisted decision."""
+
+        if not validation.is_valid:
+            raise ValueError("edited proposal draft is not valid")
+        async with self._sessions() as session, session.begin():
+            project = await session.get(ProjectRow, project_id)
+            if project is None:
+                raise LookupError(f"project {project_id} was not found")
+            if project.state != ProjectState.AWAITING_APPROVAL.value:
+                raise ValueError("project is not awaiting approval")
+            existing = await session.scalar(
+                select(OutboxEventRow.id).where(
+                    OutboxEventRow.deduplication_key == notification_key
+                )
+            )
+            if existing is not None:
+                return False
+
+            latest_version = await session.scalar(
+                select(func.max(ProposalDraftRow.version)).where(
+                    ProposalDraftRow.project_id == project_id
+                )
+            )
+            next_version = (latest_version or 0) + 1
+            await session.execute(
+                update(ApprovalTokenRow)
+                .where(
+                    ApprovalTokenRow.project_id == project_id,
+                    ApprovalTokenRow.used_at.is_(None),
+                )
+                .values(used_at=now)
+            )
+            session.add(
+                ProposalDraftRow(
+                    project_id=project_id,
+                    body=body,
+                    validator_result=validation.model_dump(mode="json"),
+                    version=next_version,
+                )
+            )
+            session.add(
+                ApprovalTokenRow(
+                    id=approval_id,
+                    project_id=project_id,
+                    token_hash=token_hash,
+                    expires_at=expires_at,
+                )
+            )
+            session.add(
+                OutboxEventRow(
+                    event_type="assisted_review",
+                    deduplication_key=notification_key,
+                    payload={
+                        "project_id": str(project_id),
+                        "approval_id": str(approval_id),
+                        "draft_version": next_version,
+                    },
+                )
+            )
+            return True
 
     async def reserve_submission(self, project_id: UUID, key: str) -> bool:
         """Reserve the sole submission slot before any browser side effect."""
@@ -136,3 +618,9 @@ class ProjectRepository:
         )
         result = await session.scalar(statement)
         return result
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Normalize SQLite's naive DateTime round-trip to UTC."""
+
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

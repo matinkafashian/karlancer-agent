@@ -9,6 +9,8 @@ BASE_SETTINGS = {
     "database_url": "postgresql+asyncpg://agent:secret@localhost:5432/karlancer",
     "telegram_bot_token": "123456:super-secret-token",
     "telegram_chat_id": 123456789,
+    "internal_api_key": "internal-super-secret",
+    "approval_signing_key": "approval-signing-key-with-32-characters",
 }
 
 
@@ -62,3 +64,17 @@ def test_secrets_are_masked_in_repr() -> None:
 
     assert "super-secret-token" not in rendered
     assert "agent:secret" not in rendered
+    assert "internal-super-secret" not in rendered
+    assert "approval-signing-key-with-32-characters" not in rendered
+
+
+@pytest.mark.parametrize("key", ("", "too-short"))
+def test_internal_api_key_must_not_be_weak(key: str) -> None:
+    with pytest.raises(ValidationError):
+        make_settings(internal_api_key=key)
+
+
+@pytest.mark.parametrize("key", ("", "too-short"))
+def test_approval_signing_key_must_not_be_weak(key: str) -> None:
+    with pytest.raises(ValidationError):
+        make_settings(approval_signing_key=key)

@@ -207,3 +207,23 @@ class OutboxEventRow(Base):
         DateTime(timezone=True), nullable=False, default=utc_now
     )
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ApprovalTokenRow(Base):
+    """Short-lived, one-time capability for one assisted decision."""
+
+    __tablename__ = "approval_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_approval_tokens_hash"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )

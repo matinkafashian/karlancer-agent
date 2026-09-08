@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     database_url: SecretStr
     telegram_bot_token: SecretStr
     telegram_chat_id: int
+    internal_api_key: SecretStr = Field(min_length=16)
+    approval_signing_key: SecretStr = Field(min_length=32)
     browser_profile_dir: Path = Path("/data/browser-profile")
     browser_headless: bool = False
 
