@@ -25,6 +25,8 @@ def test_defaults_are_safe() -> None:
     assert settings.submission_enabled is False
     assert settings.daily_submission_limit == 30
     assert settings.browser_profile_dir == Path("/data/browser-profile")
+    assert settings.evidence_dir == Path("/data/evidence")
+    assert settings.evidence_retention_days == 7
     assert settings.real_submission_allowed is False
 
 
@@ -78,3 +80,9 @@ def test_internal_api_key_must_not_be_weak(key: str) -> None:
 def test_approval_signing_key_must_not_be_weak(key: str) -> None:
     with pytest.raises(ValidationError):
         make_settings(approval_signing_key=key)
+
+
+@pytest.mark.parametrize("days", (0, 31))
+def test_evidence_retention_is_bounded(days: int) -> None:
+    with pytest.raises(ValidationError):
+        make_settings(evidence_retention_days=days)

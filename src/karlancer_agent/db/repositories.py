@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import CursorResult, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -13,6 +13,7 @@ from karlancer_agent.classification.rules import RuleAssessment
 from karlancer_agent.db.models import (
     AnalysisRow,
     ApprovalTokenRow,
+    AuditEventRow,
     OutboxEventRow,
     ProjectRow,
     ProposalDraftRow,
@@ -33,6 +34,9 @@ from karlancer_agent.proposal.validator import ProposalValidation
 ApprovalAction = Literal["approve", "reject"]
 ApprovalConsumeResult = Literal[
     "approved", "rejected", "invalid", "wrong_project", "expired", "used", "state_conflict"
+]
+SubmissionReservationResult = Literal[
+    "reserved", "duplicate", "state_conflict", "daily_limit"
 ]
 
 
@@ -575,6 +579,405 @@ class ProjectRepository:
             else:
                 await savepoint.commit()
                 return True
+
+    async def submission_material(self, project_id: UUID) -> dict[str, Any] | None:
+        """Load the sole persisted source for body, amount, duration, and approval."""
+
+        async with self._sessions() as session:
+            project = await session.get(ProjectRow, project_id)
+            if project is None or project.extracted_data is None:
+                return None
+            draft = await session.scalar(
+                select(ProposalDraftRow)
+                .where(ProposalDraftRow.project_id == project_id)
+                .order_by(ProposalDraftRow.version.desc())
+                .limit(1)
+            )
+            if draft is None:
+                return None
+            material = dict(project.extracted_data)
+            material.update(
+                {
+                    "project_url": project.canonical_project_url,
+                    "body": draft.body,
+                    "validator_result": draft.validator_result,
+                    "approved_at": draft.approved_at,
+                    "state": project.state,
+                }
+            )
+            return material
+
+    async def count_recent_submissions(self, *, since: datetime) -> int:
+        """Count reservations too, preventing concurrent workers from exceeding the cap."""
+
+        async with self._sessions() as session:
+            value = await session.scalar(
+                select(func.count(SubmissionRow.id)).where(
+                    SubmissionRow.created_at >= since
+                )
+            )
+            return int(value or 0)
+
+    async def reserve_ready_submission(
+        self,
+        project_id: UUID,
+        *,
+        key: str,
+        daily_limit: int,
+        since: datetime,
+        allowed_states: tuple[ProjectState, ...],
+        form_budget: Decimal,
+        duration_value: Decimal,
+        duration_unit: str,
+    ) -> SubmissionReservationResult:
+        """Atomically enforce state, 24-hour cap, and exactly one external attempt."""
+
+        async with self._sessions() as session, session.begin():
+            if session.get_bind().dialect.name == "postgresql":
+                # Serialize the rolling global quota check across different projects.
+                await session.execute(select(func.pg_advisory_xact_lock(4_214_337)))
+            project = await session.scalar(
+                select(ProjectRow).where(ProjectRow.id == project_id).with_for_update()
+            )
+            if project is None or project.state not in {state.value for state in allowed_states}:
+                return "state_conflict"
+            if project.state == ProjectState.SUBMIT_PENDING.value:
+                approved_at = await session.scalar(
+                    select(ProposalDraftRow.approved_at)
+                    .where(ProposalDraftRow.project_id == project_id)
+                    .order_by(ProposalDraftRow.version.desc())
+                    .limit(1)
+                )
+                if approved_at is None:
+                    return "state_conflict"
+            existing = await session.scalar(
+                select(SubmissionRow.id).where(
+                    or_(
+                        SubmissionRow.project_id == project_id,
+                        SubmissionRow.idempotency_key == key,
+                    )
+                )
+            )
+            if existing is not None:
+                return "duplicate"
+            recent = await session.scalar(
+                select(func.count(SubmissionRow.id)).where(SubmissionRow.created_at >= since)
+            )
+            if int(recent or 0) >= daily_limit:
+                return "daily_limit"
+
+            savepoint = await session.begin_nested()
+            try:
+                session.add(
+                    SubmissionRow(
+                        project_id=project_id,
+                        idempotency_key=key,
+                        status="reserved",
+                        form_budget=form_budget,
+                        duration_value=duration_value,
+                        duration_unit=duration_unit,
+                    )
+                )
+                if project.state == ProjectState.DRAFTED.value:
+                    project.state = ProjectState.SUBMIT_PENDING.value
+                await session.flush()
+            except IntegrityError:
+                await savepoint.rollback()
+                return "duplicate"
+            else:
+                await savepoint.commit()
+                return "reserved"
+
+    async def record_shadow_preview(
+        self,
+        project_id: UUID,
+        *,
+        evidence_hash: str,
+        screenshot_path: str,
+        html_path: str,
+    ) -> None:
+        """Audit a read-only preview without creating a submission reservation."""
+
+        async with self._sessions() as session, session.begin():
+            session.add(
+                AuditEventRow(
+                    project_id=project_id,
+                    event_type="would_submit",
+                    actor="submission_guard",
+                    payload={
+                        "evidence_hash": evidence_hash,
+                        "screenshot_path": screenshot_path,
+                        "html_path": html_path,
+                    },
+                )
+            )
+
+    async def complete_submission(
+        self,
+        project_id: UUID,
+        *,
+        submitted_at: datetime,
+        evidence_url: str,
+        evidence_hash: str,
+    ) -> bool:
+        """Record success only after the browser exposes deterministic evidence."""
+
+        async with self._sessions() as session, session.begin():
+            submission_result = cast(
+                CursorResult[object],
+                await session.execute(
+                    update(SubmissionRow)
+                    .where(
+                        SubmissionRow.project_id == project_id,
+                        SubmissionRow.status == "reserved",
+                    )
+                    .values(
+                        status="submitted",
+                        submitted_at=submitted_at,
+                        evidence_url=evidence_url,
+                        evidence_hash=evidence_hash,
+                    )
+                ),
+            )
+            project_result = cast(
+                CursorResult[object],
+                await session.execute(
+                    update(ProjectRow)
+                    .where(
+                        ProjectRow.id == project_id,
+                        ProjectRow.state == ProjectState.SUBMIT_PENDING.value,
+                    )
+                    .values(state=ProjectState.SUBMITTED.value, last_error=None)
+                ),
+            )
+            complete = submission_result.rowcount == 1 and project_result.rowcount == 1
+            if not complete:
+                await session.rollback()
+            return complete
+
+    async def pause_submission(
+        self,
+        project_id: UUID,
+        *,
+        reason: str,
+        evidence_url: str | None,
+        evidence_hash: str | None,
+    ) -> bool:
+        """Permanently pause an attempted submit; no automatic retry is permitted."""
+
+        async with self._sessions() as session, session.begin():
+            await session.execute(
+                update(SubmissionRow)
+                .where(
+                    SubmissionRow.project_id == project_id,
+                    SubmissionRow.status == "reserved",
+                )
+                .values(
+                    status="paused_error",
+                    evidence_url=evidence_url,
+                    evidence_hash=evidence_hash,
+                )
+            )
+            result = cast(
+                CursorResult[object],
+                await session.execute(
+                    update(ProjectRow)
+                    .where(
+                        ProjectRow.id == project_id,
+                        ProjectRow.state == ProjectState.SUBMIT_PENDING.value,
+                    )
+                    .values(state=ProjectState.PAUSED_ERROR.value, last_error=reason)
+                ),
+            )
+            return result.rowcount == 1
+
+    async def claim_reply_watch_targets(self) -> tuple[dict[str, Any], ...]:
+        """Move new submissions into read-only reply watch and return active targets."""
+
+        watch_states = (
+            ProjectState.SUBMITTED.value,
+            ProjectState.REPLY_WATCH.value,
+        )
+        async with self._sessions() as session, session.begin():
+            statement = (
+                select(ProjectRow, SubmissionRow)
+                .join(SubmissionRow, SubmissionRow.project_id == ProjectRow.id)
+                .where(
+                    ProjectRow.state.in_(watch_states),
+                    SubmissionRow.status == "submitted",
+                    SubmissionRow.submitted_at.is_not(None),
+                )
+                .order_by(SubmissionRow.submitted_at, ProjectRow.id)
+                .with_for_update(skip_locked=True)
+            )
+            rows = (await session.execute(statement)).all()
+            targets: list[dict[str, Any]] = []
+            for project, submission in rows:
+                if project.state == ProjectState.SUBMITTED.value:
+                    project.state = ProjectState.REPLY_WATCH.value
+                extracted = project.extracted_data or {}
+                description = str(extracted.get("description", "")).strip()
+                targets.append(
+                    {
+                        "project_id": project.id,
+                        "title": project.title,
+                        "project_url": project.canonical_project_url,
+                        "project_summary": description[:500] or project.title,
+                        "submitted_at": submission.submitted_at,
+                        "conversation_url": submission.conversation_url,
+                    }
+                )
+            return tuple(targets)
+
+    async def set_submission_conversation_url(
+        self, project_id: UUID, *, conversation_url: str
+    ) -> bool:
+        """Persist the discovered room once so later polls avoid scanning every room."""
+
+        if not conversation_url.startswith(
+            "https://www.karlancer.com/panel/messages?room="
+        ):
+            raise ValueError("conversation URL must be a Karlancer room")
+        async with self._sessions() as session, session.begin():
+            result = cast(
+                CursorResult[object],
+                await session.execute(
+                    update(SubmissionRow)
+                    .where(
+                        SubmissionRow.project_id == project_id,
+                        SubmissionRow.status == "submitted",
+                    )
+                    .values(conversation_url=conversation_url)
+                ),
+            )
+            return result.rowcount == 1
+
+    async def queue_first_reply_once(
+        self, reply: FirstReply, *, notification_key: str
+    ) -> bool:
+        """Atomically persist the first reply and a recoverable Telegram outbox item."""
+
+        project_id = UUID(reply.project_id)
+        async with self._sessions() as session, session.begin():
+            project = await session.scalar(
+                select(ProjectRow).where(ProjectRow.id == project_id).with_for_update()
+            )
+            if project is None or project.state != ProjectState.REPLY_WATCH.value:
+                return False
+            existing = await session.scalar(
+                select(ReplyEventRow.id).where(ReplyEventRow.project_id == project_id)
+            )
+            if existing is not None:
+                return False
+
+            reply_id = uuid4()
+            savepoint = await session.begin_nested()
+            try:
+                session.add(
+                    ReplyEventRow(
+                        id=reply_id,
+                        project_id=project_id,
+                        employer_message_id=reply.employer_message_id,
+                        reply_text=reply.text,
+                        received_at=reply.received_at,
+                        conversation_url=str(reply.conversation_url),
+                    )
+                )
+                session.add(
+                    OutboxEventRow(
+                        event_type="first_reply",
+                        deduplication_key=notification_key,
+                        payload={
+                            "project_id": str(project_id),
+                            "reply_event_id": str(reply_id),
+                        },
+                    )
+                )
+                project.state = ProjectState.REPLY_NOTIFIED.value
+                await session.flush()
+            except IntegrityError:
+                await savepoint.rollback()
+                return False
+            else:
+                await savepoint.commit()
+                return True
+
+    async def pending_first_reply_notification_keys(self) -> tuple[str, ...]:
+        """Return undelivered handoffs so a crash before Telegram send is recoverable."""
+
+        async with self._sessions() as session:
+            values = await session.scalars(
+                select(OutboxEventRow.deduplication_key)
+                .where(
+                    OutboxEventRow.event_type == "first_reply",
+                    OutboxEventRow.delivered.is_(False),
+                )
+                .order_by(OutboxEventRow.created_at, OutboxEventRow.id)
+            )
+            return tuple(values)
+
+    async def first_reply_report_data(
+        self, notification_key: str
+    ) -> dict[str, Any] | None:
+        """Load the immutable report payload represented by one outbox key."""
+
+        async with self._sessions() as session:
+            event = await session.scalar(
+                select(OutboxEventRow).where(
+                    OutboxEventRow.deduplication_key == notification_key,
+                    OutboxEventRow.event_type == "first_reply",
+                )
+            )
+            if event is None:
+                return None
+            project_id = UUID(cast(str, event.payload["project_id"]))
+            reply_id = UUID(cast(str, event.payload["reply_event_id"]))
+            project = await session.get(ProjectRow, project_id)
+            reply = await session.get(ReplyEventRow, reply_id)
+            if project is None or reply is None:
+                raise RuntimeError("first-reply outbox references missing data")
+            extracted = project.extracted_data or {}
+            description = str(extracted.get("description", "")).strip()
+            return {
+                "project_id": project_id,
+                "title": project.title,
+                "project_summary": description[:500] or project.title,
+                "reply_summary": reply.reply_text[:1000],
+                "conversation_url": reply.conversation_url,
+                "delivered": event.delivered,
+            }
+
+    async def complete_first_reply_notification(
+        self, notification_key: str, *, notified_at: datetime
+    ) -> bool:
+        """Mark delivery and enter terminal human handoff in one transaction."""
+
+        async with self._sessions() as session, session.begin():
+            event = await session.scalar(
+                select(OutboxEventRow)
+                .where(
+                    OutboxEventRow.deduplication_key == notification_key,
+                    OutboxEventRow.event_type == "first_reply",
+                )
+                .with_for_update()
+            )
+            if event is None or event.delivered:
+                return False
+            project_id = UUID(cast(str, event.payload["project_id"]))
+            reply_id = UUID(cast(str, event.payload["reply_event_id"]))
+            project = await session.get(ProjectRow, project_id)
+            reply = await session.get(ReplyEventRow, reply_id)
+            if (
+                project is None
+                or reply is None
+                or project.state != ProjectState.REPLY_NOTIFIED.value
+            ):
+                return False
+            event.delivered = True
+            event.delivered_at = notified_at
+            reply.notified_at = notified_at
+            project.state = ProjectState.HUMAN_HANDOFF.value
+            return True
 
     async def record_first_reply_once(self, reply: FirstReply) -> bool:
         """Persist no more than one employer reply event for each project."""

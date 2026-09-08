@@ -125,6 +125,7 @@ class SubmissionRow(Base):
     form_budget: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     duration_value: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     duration_unit: Mapped[str | None] = mapped_column(String(32))
+    conversation_url: Mapped[str | None] = mapped_column(Text)
     evidence_url: Mapped[str | None] = mapped_column(Text)
     evidence_hash: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(

@@ -7,6 +7,7 @@ import pytest
 
 from karlancer_agent.notifications.telegram import (
     AssistedReport,
+    FirstReplyReport,
     TelegramBotClient,
     TelegramMessageTooLong,
 )
@@ -78,3 +79,34 @@ async def test_report_rejects_message_over_bot_api_limit_without_network_call() 
         with pytest.raises(TelegramMessageTooLong):
             await client.send_assisted_report(oversized, notification_key="review:key")
     assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_first_reply_report_contains_summary_and_direct_conversation_link() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 88}})
+
+    first_reply = FirstReplyReport(
+        title="هوش مصنوعی حقوقی",
+        project_summary="ساخت دستیار حقوقی محلی",
+        reply_summary="سلام، مدل کاملاً روی سرور خودمان اجرا می‌شود؟",
+        conversation_url=(
+            "https://www.karlancer.com/panel/messages?room=7062838&type=messages"
+        ),
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        receipt = await TelegramBotClient(
+            token="123:secret", chat_id=42, http=http
+        ).send_first_reply_report(first_reply, notification_key="first-reply:111:v1")
+
+    assert receipt.message_id == 88
+    payload = json.loads(requests[0].content)
+    assert "اولین پاسخ کارفرما" in payload["text"]
+    assert "ساخت دستیار حقوقی محلی" in payload["text"]
+    assert "مدل کاملاً روی سرور" in payload["text"]
+    assert payload["reply_markup"]["inline_keyboard"][0][0]["url"].endswith(
+        "room=7062838&type=messages"
+    )

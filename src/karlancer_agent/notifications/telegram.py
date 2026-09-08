@@ -32,6 +32,17 @@ class AssistedReport(BaseModel):
     reject_callback: str = Field(min_length=1)
 
 
+class FirstReplyReport(BaseModel):
+    """One-way handoff report after the employer's first response."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    title: str = Field(min_length=1)
+    project_summary: str = Field(min_length=1)
+    reply_summary: str = Field(min_length=1)
+    conversation_url: str = Field(pattern=r"^https://www\.karlancer\.com/panel/messages")
+
+
 class TelegramReceipt(BaseModel):
     """Stable result used to complete the durable outbox record."""
 
@@ -90,6 +101,53 @@ class TelegramBotClient:
                                 },
                             ],
                             [{"text": "مشاهده پروژه", "url": report.project_url}],
+                        ]
+                    },
+                },
+                timeout=self._timeout,
+            )
+        except httpx.HTTPError as error:
+            raise TelegramError("Telegram transport failed") from error
+        if response.status_code >= 400:
+            raise TelegramError(f"Telegram returned HTTP {response.status_code}")
+        try:
+            payload = response.json()
+            if payload.get("ok") is not True:
+                raise TelegramError("Telegram rejected the report")
+            message_id = int(payload["result"]["message_id"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise TelegramError("Telegram returned an invalid response") from error
+        return TelegramReceipt(message_id=message_id, notification_key=notification_key)
+
+    async def send_first_reply_report(
+        self, report: FirstReplyReport, *, notification_key: str
+    ) -> TelegramReceipt:
+        text = (
+            "<b>اولین پاسخ کارفرما</b>\n\n"
+            f"<b>پروژه:</b> {escape(report.title)}\n"
+            f"<b>خلاصه پروژه:</b> {escape(report.project_summary)}\n\n"
+            f"<b>پاسخ:</b> {escape(report.reply_summary)}"
+        )
+        if len(text) > TELEGRAM_TEXT_LIMIT:
+            raise TelegramMessageTooLong(
+                f"first-reply report is {len(text)} characters; Telegram limit is 4096"
+            )
+        try:
+            response = await self._http.post(
+                self._endpoint,
+                json={
+                    "chat_id": self._chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "link_preview_options": {"is_disabled": True},
+                    "reply_markup": {
+                        "inline_keyboard": [
+                            [
+                                {
+                                    "text": "باز کردن گفتگو",
+                                    "url": report.conversation_url,
+                                }
+                            ]
                         ]
                     },
                 },

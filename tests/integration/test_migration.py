@@ -35,3 +35,27 @@ def test_initial_migration_creates_complete_schema(tmp_path: Path) -> None:
         }
 
     assert tables >= EXPECTED_TABLES
+
+
+def test_existing_database_upgrade_adds_submission_conversation_url(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "migration-upgrade.sqlite3"
+    config = Config("alembic.ini")
+    config.set_main_option(
+        "sqlalchemy.url", f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    )
+
+    command.upgrade(config, "0002_assisted_approval")
+    with sqlite3.connect(database_path) as connection:
+        before = {
+            row[1] for row in connection.execute("PRAGMA table_info(submissions)")
+        }
+    assert "conversation_url" not in before
+
+    command.upgrade(config, "head")
+    with sqlite3.connect(database_path) as connection:
+        after = {
+            row[1] for row in connection.execute("PRAGMA table_info(submissions)")
+        }
+    assert "conversation_url" in after

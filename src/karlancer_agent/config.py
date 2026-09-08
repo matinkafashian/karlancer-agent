@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     approval_signing_key: SecretStr = Field(min_length=32)
     browser_profile_dir: Path = Path("/data/browser-profile")
     browser_headless: bool = False
+    evidence_dir: Path = Path("/data/evidence")
+    evidence_retention_days: int = Field(default=7, ge=1, le=30)
 
     @property
     def real_submission_allowed(self) -> bool:
