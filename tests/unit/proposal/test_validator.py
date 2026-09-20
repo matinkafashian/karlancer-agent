@@ -61,7 +61,21 @@ def test_approved_proposal_is_valid_and_middle_has_target_length() -> None:
 
     assert result.is_valid is True
     assert result.issues == ()
-    assert 55 <= result.middle_word_count <= 80
+    assert 55 <= result.middle_word_count <= 100
+
+
+def test_short_specific_proposal_without_questions_is_accepted() -> None:
+    body = (
+        f"{FIXED_INTRO}\n\n"
+        "پیام‌های ربات تلگرام باید پس از راه‌اندازی مجدد حفظ شوند.\n\n"
+        "با پایتون پیام‌ها را در PostgreSQL ذخیره می‌کنم و شناسه پیام را "
+        "برای جلوگیری از ثبت تکراری بررسی می‌کنم.\n\n"
+        f"{PRICE_SENTENCE}\n\n{FIXED_OUTRO}"
+    )
+    result = ProposalValidator().validate(body=body, project=project())
+    assert result.is_valid
+    assert result.middle_word_count < 55
+    assert "؟" not in body
 
 
 @pytest.mark.parametrize(
@@ -69,13 +83,6 @@ def test_approved_proposal_is_valid_and_middle_has_target_length() -> None:
     (
         (lambda body: body.replace(FIXED_INTRO, "سلام"), "fixed_intro"),
         (lambda body: body.replace(FIXED_OUTRO, "در خدمتم."), "fixed_outro"),
-        (
-            lambda body: body.replace(
-                "https://github.com/matinkafashian",
-                "https://github.com/changed",
-            ),
-            "fixed_outro",
-        ),
         (lambda body: body.replace(PRICE_SENTENCE, ""), "price_sentence"),
     ),
 )
@@ -103,8 +110,21 @@ def test_contact_or_off_platform_text_is_rejected(unsafe_text: str) -> None:
     assert "off_platform_contact" in issue_codes(body)
 
 
-def test_approved_portfolio_links_do_not_trigger_contact_rule() -> None:
-    assert "off_platform_contact" not in issue_codes(valid_body())
+@pytest.mark.parametrize(
+    "external_reference",
+    (
+        "سوابق من در github.com/example قرار دارد.",
+        "نام من را در گوگل جست‌وجو کنید.",
+        "نمونه‌کارها در لینکدین من هستند.",
+        "کانال یوتیوب من را ببینید.",
+    ),
+)
+def test_any_external_link_or_portfolio_reference_is_rejected(
+    external_reference: str,
+) -> None:
+    body = valid_body().replace(PRICE_SENTENCE, f"{external_reference}\n\n{PRICE_SENTENCE}")
+
+    assert "off_platform_contact" in issue_codes(body)
 
 
 def test_more_than_two_questions_is_rejected() -> None:
@@ -126,6 +146,11 @@ def test_more_than_two_questions_is_rejected() -> None:
         "صددرصد تضمینی",
         "صد در صد تضمینی",
         "بهترین کیفیت",
+        "چند پروژه مشابه پروژه شما را قبلاً انجام داده‌ام",
+        "تضمین صددرصد",
+        "تضمین صد درصد",
+        "تقریباً به‌طور کامل متوجه نیاز و نتیجه موردنظرتان شده‌ام",
+        "تقریبا به طور کامل متوجه نیاز و نتیجه مورد نظرتان شده ام",
     ),
 )
 def test_banned_cliches_are_rejected(cliche: str) -> None:
@@ -149,9 +174,7 @@ def test_one_long_generic_paragraph_cannot_replace_understanding_and_approach() 
         "به مرحله بررسی می‌شود و تنظیمات لازم، راهنمای اجرا، توضیحات فنی و فایل‌های مورد "
         "نیاز همراه نتیجه نهایی در اختیار کارفرما قرار می‌گیرد تا ادامه کار ساده باشد."
     )
-    body = (
-        f"{FIXED_INTRO}\n\n{one_paragraph}\n\n{PRICE_SENTENCE}\n\n{FIXED_OUTRO}"
-    )
+    body = f"{FIXED_INTRO}\n\n{one_paragraph}\n\n{PRICE_SENTENCE}\n\n{FIXED_OUTRO}"
 
     assert "middle_structure" in issue_codes(body)
 
@@ -194,10 +217,35 @@ def test_detail_from_description_is_enough_to_make_middle_project_specific() -> 
     ("middle", "expected_code"),
     (
         ("ربات تلگرام پایتون", "middle_too_short"),
-        (("ربات تلگرام پایتون و پایگاه داده " * 30).strip(), "middle_too_long"),
+        (("ربات تلگرام پایتون و پایگاه داده " * 50).strip(), "middle_too_long"),
     ),
 )
 def test_middle_length_bounds_are_enforced(middle: str, expected_code: str) -> None:
     body = f"{FIXED_INTRO}\n\n{middle}\n\n{PRICE_SENTENCE}\n\n{FIXED_OUTRO}"
 
     assert expected_code in issue_codes(body)
+
+
+@pytest.mark.parametrize(
+    "opening",
+    (
+        "ربات تلگرام را طوری بسازیم که مشتری بتواند سفارش ثبت کند.",
+        "میخواهید مشتری سفارش خود را در ربات تلگرام ثبت کند.",
+        "ربات تلگرام باید سفارش مشتری را بپذیرد.",
+    ),
+)
+def test_valid_persian_openings_do_not_require_a_verb_allowlist(opening: str) -> None:
+    body = valid_body().replace(valid_core().project_understanding, opening)
+    assert ProposalValidator().validate(body=body, project=project()).is_valid
+
+
+def test_order_bot_fixture_rejects_list_opening_but_accepts_sentence() -> None:
+    import json
+    from pathlib import Path
+
+    fixture = json.loads(
+        (Path(__file__).parents[2] / "fixtures/order_bot.json").read_text(encoding="utf-8")
+    )
+    for opening, rejected in ((fixture["fragment"], True), (fixture["sentence"], False)):
+        body = valid_body().replace(valid_core().project_understanding, opening)
+        assert ("nominal_opening" in issue_codes(body)) is rejected

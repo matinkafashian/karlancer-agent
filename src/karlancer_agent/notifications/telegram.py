@@ -1,12 +1,14 @@
 """Small Telegram Bot API adapter for assisted-review reports."""
 
+from datetime import timedelta, timezone
 from html import escape
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 TELEGRAM_TEXT_LIMIT = 4096
 TELEGRAM_CALLBACK_LIMIT = 64
+TEHRAN = timezone(timedelta(hours=3, minutes=30))
 
 
 class TelegramError(RuntimeError):
@@ -40,7 +42,18 @@ class FirstReplyReport(BaseModel):
     title: str = Field(min_length=1)
     project_summary: str = Field(min_length=1)
     reply_summary: str = Field(min_length=1)
+    received_at: AwareDatetime
+    project_url: str = Field(pattern=r"^https://www\.karlancer\.com/projects/")
     conversation_url: str = Field(pattern=r"^https://www\.karlancer\.com/panel/messages")
+
+
+class SystemReport(BaseModel):
+    """Short operational message sent only to the agent owner."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    title: str = Field(min_length=1, max_length=120)
+    body: str = Field(min_length=1, max_length=2000)
 
 
 class TelegramReceipt(BaseModel):
@@ -126,7 +139,9 @@ class TelegramBotClient:
             "<b>اولین پاسخ کارفرما</b>\n\n"
             f"<b>پروژه:</b> {escape(report.title)}\n"
             f"<b>خلاصه پروژه:</b> {escape(report.project_summary)}\n\n"
-            f"<b>پاسخ:</b> {escape(report.reply_summary)}"
+            f"<b>پاسخ:</b> {escape(report.reply_summary)}\n"
+            f"<b>زمان پاسخ:</b> "
+            f"{report.received_at.astimezone(TEHRAN):%Y-%m-%d %H:%M}"
         )
         if len(text) > TELEGRAM_TEXT_LIMIT:
             raise TelegramMessageTooLong(
@@ -141,15 +156,49 @@ class TelegramBotClient:
                     "parse_mode": "HTML",
                     "link_preview_options": {"is_disabled": True},
                     "reply_markup": {
-                        "inline_keyboard": [
-                            [
-                                {
-                                    "text": "باز کردن گفتگو",
-                                    "url": report.conversation_url,
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": "مشاهده پروژه",
+                                "url": report.project_url,
+                            },
+                            {
+                                "text": "باز کردن گفتگو",
+                                "url": report.conversation_url,
                                 }
                             ]
                         ]
                     },
+                },
+                timeout=self._timeout,
+            )
+        except httpx.HTTPError as error:
+            raise TelegramError("Telegram transport failed") from error
+        if response.status_code >= 400:
+            raise TelegramError(f"Telegram returned HTTP {response.status_code}")
+        try:
+            payload = response.json()
+            if payload.get("ok") is not True:
+                raise TelegramError("Telegram rejected the report")
+            message_id = int(payload["result"]["message_id"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise TelegramError("Telegram returned an invalid response") from error
+        return TelegramReceipt(message_id=message_id, notification_key=notification_key)
+
+    async def send_system_report(
+        self, report: SystemReport, *, notification_key: str
+    ) -> TelegramReceipt:
+        """Send a small health/error report without exposing any configuration."""
+
+        text = f"<b>{escape(report.title)}</b>\n\n{escape(report.body)}"
+        try:
+            response = await self._http.post(
+                self._endpoint,
+                json={
+                    "chat_id": self._chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "link_preview_options": {"is_disabled": True},
                 },
                 timeout=self._timeout,
             )

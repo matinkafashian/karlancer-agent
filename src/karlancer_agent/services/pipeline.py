@@ -23,7 +23,7 @@ from karlancer_agent.proposal.validator import ProposalValidator
 logger = logging.getLogger(__name__)
 SOURCE_NAME = "karlancer_projects"
 ANALYSIS_VERSION = "semantic-v1"
-PROMPT_VERSION = "proposal-core-v1"
+PROMPT_VERSION = "proposal-core-v3-natural"
 
 
 class BrowserPages(Protocol):

@@ -10,6 +10,7 @@ from karlancer_agent.browser.extractor import (
     parse_duration,
     parse_project_page,
 )
+from karlancer_agent.browser.selectors import PROJECT_ROOT
 
 PROGRAMMING_FIXTURE = Path("tests/fixtures/project_ai_programming.html")
 TOOL_ONLY_FIXTURE = Path("tests/fixtures/project_tool_only.html")
@@ -116,9 +117,17 @@ async def test_playwright_adapter_navigates_read_only_and_parses_content() -> No
 
         def __init__(self) -> None:
             self.visited: tuple[str, str] | None = None
+            self.waited_for: tuple[str, str, int] | None = None
 
         async def goto(self, url: str, **kwargs: object) -> None:
             self.visited = (url, str(kwargs["wait_until"]))
+
+        async def wait_for_selector(self, selector: str, **kwargs: object) -> None:
+            self.waited_for = (
+                selector,
+                str(kwargs["state"]),
+                int(kwargs["timeout"]),
+            )
 
         async def content(self) -> str:
             return PROGRAMMING_FIXTURE.read_text(encoding="utf-8")
@@ -127,6 +136,7 @@ async def test_playwright_adapter_navigates_read_only_and_parses_content() -> No
     project = await ProjectExtractor().extract(page, page.url)
 
     assert page.visited == (page.url, "domcontentloaded")
+    assert page.waited_for == (PROJECT_ROOT, "visible", 30_000)
     assert project.project_id == "322263"
 
 

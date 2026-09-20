@@ -45,6 +45,16 @@ class TelegramPreviewSource:
         else:
             async with httpx.AsyncClient() as client:
                 projects = await self._fetch_and_parse(client)
+        if (
+            after_message_id is not None
+            and projects
+            and min(item.channel_message_id for item in projects) > after_message_id
+        ):
+            # The public preview cannot establish continuity after a long outage.
+            # Do not silently discard history by advancing the persistent cursor.
+            raise IngestionUnavailableError(
+                "Telegram preview history gap; bounded manual backfill required"
+            )
         return self._with_overlap(projects, after_message_id)
 
     async def _fetch_and_parse(self, client: httpx.AsyncClient) -> list[ChannelProject]:

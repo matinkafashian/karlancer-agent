@@ -31,5 +31,5 @@ class ProposalCore(StructuredOutput):
 
     project_understanding: str = Field(min_length=1)
     technical_approach: str = Field(min_length=1)
-    questions: tuple[str, ...] = Field(max_length=2)
-
+    questions: tuple[str, ...] = Field(default=(), max_length=2)
+    question_reasons: tuple[str, ...] = Field(default=(), max_length=2)

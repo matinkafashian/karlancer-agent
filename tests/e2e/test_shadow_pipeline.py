@@ -55,6 +55,9 @@ class FixturePage:
     async def goto(self, url: str, **kwargs: Any) -> None:
         self.url = url
 
+    async def wait_for_selector(self, selector: str, **kwargs: Any) -> None:
+        return None
+
     async def content(self) -> str:
         return FIXTURE.read_text(encoding="utf-8")
 

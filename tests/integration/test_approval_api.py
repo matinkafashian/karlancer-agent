@@ -258,3 +258,16 @@ async def test_reject_and_valid_edit_have_explicit_state_results(engine) -> None
     assert edited.status_code == 200
     assert edited.json()["state"] == ProjectState.AWAITING_APPROVAL.value
     assert len(telegram.sent) == 3
+
+
+def test_auto_mode_cannot_emit_assisted_review_notifications():
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from karlancer_agent.api.routes.approvals import _approval_commands
+    from karlancer_agent.config import RunMode
+    with pytest.raises(HTTPException) as error:
+        _approval_commands(SimpleNamespace(settings=SimpleNamespace(run_mode=RunMode.AUTO),
+                                           approvals=object()))
+    assert error.value.status_code == 409

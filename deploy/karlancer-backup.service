@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up Karlancer PostgreSQL and n8n data
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/karlancer-agent
+ExecStart=/opt/karlancer-agent/scripts/backup.sh
+Nice=10

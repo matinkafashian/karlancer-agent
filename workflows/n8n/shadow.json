@@ -1,0 +1,73 @@
+{
+  "id": "kaShadow01AbCdEf",
+  "name": "Karlancer - Shadow Analysis",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "schedule-shadow",
+      "name": "Every 5 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://worker:8000/v1/jobs/shadow",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-API-Key",
+              "value": "={{ $env.KARLANCER_INTERNAL_API_KEY }}"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ 'shadow-' + $execution.id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "run-shadow",
+      "name": "Run shadow analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "errorMessage": "Karlancer shadow analysis failed"
+      },
+      "id": "surface-shadow-error",
+      "name": "Surface shadow failure",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [780, 440]
+    }
+  ],
+  "connections": {
+    "Every 5 minutes": {
+      "main": [[{"node": "Run shadow analysis", "type": "main", "index": 0}]]
+    },
+    "Run shadow analysis": {
+      "main": [[], [{"node": "Surface shadow failure", "type": "main", "index": 0}]]
+    }
+  },
+  "pinData": {},
+  "settings": {"executionOrder": "v1"},
+  "active": false,
+  "tags": []
+}

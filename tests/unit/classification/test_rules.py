@@ -115,8 +115,27 @@ def test_conflicting_tool_and_programming_signals_require_semantic_review() -> N
 
 
 def test_glossary_version_is_recorded() -> None:
-    result = RulesClassifier.default().assess(
-        title="RAG service", tags=(), description="Python"
-    )
+    result = RulesClassifier.default().assess(title="RAG service", tags=(), description="Python")
 
     assert result.glossary_version == "1.0.0"
+
+
+@pytest.mark.parametrize(
+    "title,description,expected",
+    (
+        ("آموزش هوش مصنوعی", "جلسات عملی برای دانشجویان", RuleDecision.ACCEPT),
+        ("Artificial intelligence training", "Practical lessons", RuleDecision.ACCEPT),
+        ("ساخت API تولید تصویر", "اتصال به سرویس مدل", RuleDecision.NEEDS_LLM),
+        ("تولید تصویر", "کار با ابزار آماده", RuleDecision.REJECT),
+        ("تولید محتوا با هوش مصنوعی", "بدون کدنویسی", RuleDecision.REJECT),
+    ),
+)
+def test_education_and_image_api_are_not_confused_with_tool_operation(
+    title: str,
+    description: str,
+    expected: RuleDecision,
+) -> None:
+    assert (
+        RulesClassifier.default().assess(title=title, tags=(), description=description).decision
+        is expected
+    )

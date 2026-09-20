@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Karlancer backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 Asia/Tehran
+Persistent=true
+RandomizedDelaySec=10m
+Unit=karlancer-backup.service
+
+[Install]
+WantedBy=timers.target

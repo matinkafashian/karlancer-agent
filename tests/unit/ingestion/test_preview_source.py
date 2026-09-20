@@ -106,3 +106,11 @@ async def test_source_raises_after_network_retry_budget_is_exhausted() -> None:
             await source.poll(after_message_id=None)
 
     assert sleeps == [0.1, 0.2, 0.3]
+
+
+@pytest.mark.asyncio
+async def test_preview_gap_does_not_silently_advance_cursor():
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, text=FIXTURE_HTML))) as client:
+        with pytest.raises(IngestionUnavailableError, match="history gap"):
+            await TelegramPreviewSource(client=client).poll(after_message_id=1000)

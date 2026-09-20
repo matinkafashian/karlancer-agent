@@ -1,6 +1,7 @@
 # ruff: noqa: RUF001
 
 import json
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from karlancer_agent.notifications.telegram import (
     AssistedReport,
     FirstReplyReport,
+    SystemReport,
     TelegramBotClient,
     TelegramMessageTooLong,
 )
@@ -93,6 +95,8 @@ async def test_first_reply_report_contains_summary_and_direct_conversation_link(
         title="هوش مصنوعی حقوقی",
         project_summary="ساخت دستیار حقوقی محلی",
         reply_summary="سلام، مدل کاملاً روی سرور خودمان اجرا می‌شود؟",
+        received_at=datetime(2026, 9, 8, 10, 18, tzinfo=UTC),
+        project_url="https://www.karlancer.com/projects/example-project",
         conversation_url=(
             "https://www.karlancer.com/panel/messages?room=7062838&type=messages"
         ),
@@ -107,6 +111,31 @@ async def test_first_reply_report_contains_summary_and_direct_conversation_link(
     assert "اولین پاسخ کارفرما" in payload["text"]
     assert "ساخت دستیار حقوقی محلی" in payload["text"]
     assert "مدل کاملاً روی سرور" in payload["text"]
-    assert payload["reply_markup"]["inline_keyboard"][0][0]["url"].endswith(
+    assert "زمان پاسخ" in payload["text"]
+    buttons = payload["reply_markup"]["inline_keyboard"][0]
+    assert buttons[0]["url"].startswith("https://www.karlancer.com/projects/")
+    assert buttons[1]["url"].endswith(
         "room=7062838&type=messages"
     )
+
+
+@pytest.mark.asyncio
+async def test_system_report_sends_fixed_health_message() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 99}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        receipt = await TelegramBotClient(
+            token="123:secret", chat_id=42, http=http
+        ).send_system_report(
+            SystemReport(title="تست اتصال", body="ربات تلگرام آماده است."),
+            notification_key="smoke:test",
+        )
+
+    assert receipt.message_id == 99
+    payload = json.loads(requests[0].content)
+    assert payload["chat_id"] == 42
+    assert "ربات تلگرام آماده است" in payload["text"]

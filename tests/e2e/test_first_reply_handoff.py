@@ -19,6 +19,7 @@ class FakeRepository:
         self.queued = False
         self.delivered = False
         self.conversation_url: str | None = None
+        self.reconciled = False
 
     async def claim_reply_watch_targets(self):
         if self.state in {ProjectState.REPLY_NOTIFIED, ProjectState.HUMAN_HANDOFF}:
@@ -33,11 +34,17 @@ class FakeRepository:
                 "project_summary": "ساخت دستیار حقوقی محلی",
                 "submitted_at": datetime(2026, 8, 28, 10, 0, tzinfo=UTC),
                 "conversation_url": self.conversation_url,
+                "requires_reconciliation": True,
             },
         )
 
     async def set_submission_conversation_url(self, project_id, *, conversation_url):
         assert project_id == PROJECT_ID
+        self.conversation_url = conversation_url
+        return True
+
+    async def confirm_submission_from_conversation(self, project_id, *, conversation_url):
+        self.reconciled = True
         self.conversation_url = conversation_url
         return True
 
@@ -62,7 +69,9 @@ class FakeRepository:
             "project_id": PROJECT_ID,
             "title": "هوش مصنوعی حقوقی",
             "project_summary": "ساخت دستیار حقوقی محلی",
+            "project_url": "https://www.karlancer.com/projects/هوش-مصنوعی-حقوقی-2m6m20w5w850",
             "reply_summary": self.reply.text,
+            "received_at": self.reply.received_at,
             "conversation_url": CONVERSATION_URL,
             "delivered": self.delivered,
         }
@@ -116,8 +125,10 @@ async def test_first_employer_reply_notifies_once_then_terminally_hands_off() ->
     assert second.notifications_sent == 0
     assert repository.state is ProjectState.HUMAN_HANDOFF
     assert len(telegram.reports) == 1
+    assert repository.reconciled is True
     report, _ = telegram.reports[0]
     assert report.title == "هوش مصنوعی حقوقی"
     assert report.project_summary == "ساخت دستیار حقوقی محلی"
+    assert str(report.project_url).startswith("https://www.karlancer.com/projects/")
     assert "مدل کاملاً روی سرور" in report.reply_summary
     assert report.conversation_url == CONVERSATION_URL

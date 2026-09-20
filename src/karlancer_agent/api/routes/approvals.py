@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from karlancer_agent.api.dependencies import ApplicationServices, ApprovalCommands
 from karlancer_agent.api.routes.projects import _authorize, _require_idempotency_key
+from karlancer_agent.config import RunMode
 from karlancer_agent.services.approval import (
     ApprovalCommandResult,
     ApprovalConflict,
@@ -30,6 +31,9 @@ class EditBody(BaseModel):
 
 
 def _approval_commands(services: ApplicationServices) -> ApprovalCommands:
+    if services.settings.run_mode is RunMode.AUTO:
+        raise HTTPException(
+            status_code=409, detail="assisted notifications are disabled in auto mode")
     if services.approvals is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

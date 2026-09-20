@@ -8,6 +8,7 @@ from karlancer_agent.classification.rules import RuleAssessment, RuleDecision
 from karlancer_agent.domain.enums import AnalysisDecision
 from karlancer_agent.domain.models import ExtractedProject
 from karlancer_agent.llm.base import ProviderUnavailableError, is_auto_eligible
+from karlancer_agent.llm.disabled import DisabledProvider
 from karlancer_agent.llm.ollama import OllamaProvider
 from karlancer_agent.llm.openai_compatible import OpenAICompatibleProvider
 
@@ -95,6 +96,24 @@ def make_provider(kind: str, client: httpx.AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_disabled_provider_marks_analysis_for_review() -> None:
+    result = await DisabledProvider().analyze(project(), rules())
+
+    assert result.decision is AnalysisDecision.NEEDS_REVIEW
+    assert result.confidence == 0
+    assert "disabled" in result.reason.lower()
+
+
+@pytest.mark.asyncio
+async def test_disabled_provider_never_drafts() -> None:
+    with pytest.raises(ProviderUnavailableError, match="disabled"):
+        await DisabledProvider().draft(
+            project(),
+            project_analysis(AnalysisDecision.ELIGIBLE, confidence=0.9),
+        )
+
+
+@pytest.mark.asyncio
 async def test_provider_contract_analyzes_to_domain_result(provider_kind: str) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         body = __import__("json").loads(request.content)
@@ -128,7 +147,11 @@ async def test_provider_contract_drafts_only_structured_middle(provider_kind: st
         calls += 1
         if calls == 2:
             body = __import__("json").loads(request.content)
-            assert "45-70 Persian words" in body["messages"][0]["content"]
+            instructions = body["messages"][0]["content"]
+            assert "Adapt length" in instructions
+            assert "zero questions by default" in instructions
+            assert "Return an empty questions list" in instructions
+            assert "genuine unresolved ambiguity" in instructions
         payload = ANALYSIS if calls == 1 else DRAFT
         return httpx.Response(200, json=response_for(provider_kind, payload))
 
@@ -144,7 +167,7 @@ async def test_provider_contract_drafts_only_structured_middle(provider_kind: st
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ("invalid_json", "incomplete", "timeout"))
-async def test_analysis_retries_once_then_falls_back_to_needs_review(
+async def test_analysis_retries_once_then_propagates_failure(
     provider_kind: str, failure: str
 ) -> None:
     calls = 0
@@ -167,12 +190,10 @@ async def test_analysis_retries_once_then_falls_back_to_needs_review(
         return httpx.Response(200, json=response_for(provider_kind, invalid))
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        result = await make_provider(provider_kind, client).analyze(project(), rules())
+        with pytest.raises(ProviderUnavailableError):
+            await make_provider(provider_kind, client).analyze(project(), rules())
 
     assert calls == 2
-    assert result.decision is AnalysisDecision.NEEDS_REVIEW
-    assert result.confidence == 0
-    assert "provider" in result.reason.lower()
 
 
 @pytest.mark.asyncio
@@ -252,10 +273,10 @@ async def test_http_400_is_not_retried(provider_kind: str) -> None:
         return httpx.Response(400, json={"error": "bad request"})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        result = await make_provider(provider_kind, client).analyze(project(), rules())
+        with pytest.raises(ProviderUnavailableError):
+            await make_provider(provider_kind, client).analyze(project(), rules())
 
     assert calls == 1
-    assert result.decision is AnalysisDecision.NEEDS_REVIEW
 
 
 def project_analysis(

@@ -14,12 +14,14 @@ from karlancer_agent.browser.selectors import (
     PROPOSAL_BODY_INPUT,
     PROPOSAL_BUDGET_INPUT,
     PROPOSAL_DURATION_INPUT,
+    VISIBLE_SUBMIT_CONTROL,
 )
 from karlancer_agent.browser.submitter import (
     ProposalSubmitter,
     SubmissionCommand,
     SubmissionGateInput,
     SubmissionGateOutcome,
+    _browser_preflight,
     evaluate_submission_gate,
 )
 from karlancer_agent.config import RunMode, Settings
@@ -31,6 +33,12 @@ NOW = datetime(2026, 9, 8, 13, 0, tzinfo=UTC)
 BID_MODAL_SELECTOR = "#setBidModal"
 CONTINUE_TO_BID_SELECTOR = (
     "#setBidModal button:has-text('ادامه و ثبت پیشنهاد')"
+)
+BASIC_SUBMIT_CONFIRM_SELECTOR = (
+    "#setBidModal div.clickable:text-is('ثبت پیشنهاد بدون ارتقا')"
+)
+SUBMISSION_SUCCESS_SELECTOR = (
+    "#setBidModal :text-is('پیشنهاد شما با موفقیت ثبت شد')"
 )
 
 
@@ -60,6 +68,12 @@ def valid_body() -> str:
         "خواهند بود. مسیرهای تست و راهنمای استقرار همراه کد تحویل می‌شود."
     )
     return f"{FIXED_INTRO}\n\n{understanding}\n\n{approach}\n\n{PRICE_SENTENCE}\n\n{FIXED_OUTRO}"
+
+
+def test_submit_selector_targets_only_the_visible_responsive_copy() -> None:
+    from karlancer_agent.browser.selectors import VISIBLE_SUBMIT_CONTROL
+
+    assert VISIBLE_SUBMIT_CONTROL.endswith(":visible")
 
 
 def material(*, state=ProjectState.SUBMIT_PENDING, approved=True, body=None):
@@ -193,9 +207,12 @@ def test_hard_submission_gates_block(changes, reason) -> None:
 
 
 class FakeRepository:
-    def __init__(self, *, material_data=None, reservation="reserved") -> None:
+    def __init__(
+        self, *, material_data=None, reservation="reserved", recent_submissions=0
+    ) -> None:
         self.material_data = material_data or material()
         self.reservation = reservation
+        self.recent_submissions = recent_submissions
         self.events: list[tuple[str, object]] = []
 
     async def submission_material(self, project_id):
@@ -204,7 +221,7 @@ class FakeRepository:
 
     async def count_recent_submissions(self, *, since):
         self.events.append(("count", since))
-        return 0
+        return self.recent_submissions
 
     async def reserve_ready_submission(self, project_id, **kwargs):
         self.events.append(("reserve", project_id))
@@ -238,6 +255,13 @@ class FakeLocator:
 
     async def click(self) -> None:
         self.page.events.append(("click", self.selector))
+        if self.selector == VISIBLE_SUBMIT_CONTROL:
+            visible_clicks = sum(
+                event[:2] == ("click", VISIBLE_SUBMIT_CONTROL)
+                for event in self.page.events
+            )
+            if visible_clicks >= 2:
+                self.page.bid_modal_open = True
         if self.selector == CONTINUE_TO_BID_SELECTOR:
             self.page.warning_visible = False
         if self.selector == "#setBidModal #submitBid":
@@ -245,8 +269,12 @@ class FakeLocator:
 
     async def is_visible(self) -> bool:
         self.page.events.append(("visible", self.selector))
+        if self.selector == SUBMISSION_SUCCESS_SELECTOR:
+            return self.page.success_visible
         if self.selector == CONTINUE_TO_BID_SELECTOR:
             return self.page.warning_visible
+        if self.selector == BASIC_SUBMIT_CONFIRM_SELECTOR:
+            return self.page.upsell_visible
         return True
 
 
@@ -260,14 +288,24 @@ class FakePage:
         html='<html><p>safe</p></html>',
         screenshot_fails=False,
         warning_visible=True,
+        upsell_visible=False,
+        modal_hides=True,
+        success_visible=False,
         success_html='<html><p>پیشنهاد شما ثبت شده است</p></html>',
+        bid_modal_open=True,
+        public_status=None,
     ) -> None:
         self.confirms = confirms
         self.html = html
         self.screenshot_fails = screenshot_fails
         self.warning_visible = warning_visible
+        self.upsell_visible = upsell_visible
+        self.modal_hides = modal_hides
+        self.success_visible = success_visible
         self.final_clicked = False
         self.success_html = success_html
+        self.bid_modal_open = bid_modal_open
+        self.public_status = public_status
         self.events: list[tuple] = []
         self.values: dict[str, str] = {}
         self.readback_overrides: dict[str, str] = {}
@@ -283,7 +321,21 @@ class FakePage:
 
     async def wait_for_selector(self, selector: str, **kwargs) -> None:
         self.events.append(("wait", selector, kwargs.get("state")))
-        if not self.confirms:
+        if (
+            selector == BID_MODAL_SELECTOR
+            and kwargs.get("state") == "visible"
+            and not self.bid_modal_open
+        ):
+            raise PlaywrightTimeoutError("bid modal did not open")
+        if selector == SUBMISSION_SUCCESS_SELECTOR and kwargs.get("state") == "visible":
+            if self.success_visible:
+                return
+            raise PlaywrightTimeoutError("success message missing")
+        if (
+            (not self.confirms or not self.modal_hides)
+            and self.final_clicked
+            and kwargs.get("state") == "hidden"
+        ):
             raise PlaywrightTimeoutError("confirmation missing")
 
     async def screenshot(self, **kwargs) -> bytes:
@@ -294,6 +346,46 @@ class FakePage:
 
     async def content(self) -> str:
         return self.html
+
+    async def evaluate(self, expression: str) -> object:
+        self.events.append(("page_evaluate", expression))
+        return self.public_status
+
+
+@pytest.mark.asyncio
+async def test_submission_retries_visible_control_when_first_click_does_not_open(
+    tmp_path,
+):
+    repository = FakeRepository()
+    page = FakePage(bid_modal_open=False)
+    submitter = ProposalSubmitter(
+        settings=settings(tmp_path, mode=RunMode.AUTO),
+        repository=repository,
+        validator=ProposalValidator(),
+        clock=lambda: NOW,
+    )
+
+    result = await submitter.submit(
+        page,
+        SubmissionCommand(
+            project_id=uuid4(), idempotency_key="submit:fallback-trigger"
+        ),
+    )
+
+    assert result.status == "submitted"
+    assert sum(
+        event[:2] == ("click", VISIBLE_SUBMIT_CONTROL) for event in page.events
+    ) == 2
+    assert not any(event[0] == "evaluate" for event in page.events)
+
+
+class FakeLimitAlerts:
+    def __init__(self) -> None:
+        self.alerts: list[dict[str, object]] = []
+
+    async def notify(self, **kwargs) -> bool:
+        self.alerts.append(kwargs)
+        return True
 
 
 @pytest.mark.asyncio
@@ -364,6 +456,61 @@ async def test_duplicate_reservation_causes_no_browser_action(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_daily_submission_limit_reports_once_without_browser_action(
+    tmp_path: Path,
+) -> None:
+    alerts = FakeLimitAlerts()
+    repository = FakeRepository(recent_submissions=30)
+    page = FakePage()
+
+    result = await ProposalSubmitter(
+        settings=settings(tmp_path),
+        repository=repository,
+        validator=ProposalValidator(),
+        limit_alerts=alerts,
+        clock=lambda: NOW,
+    ).submit(
+        page,
+        SubmissionCommand(project_id=uuid4(), idempotency_key="submit:daily-limit"),
+    )
+
+    assert result.status == "blocked"
+    assert result.reason == "daily_limit_reached"
+    assert page.events == []
+    assert [alert["reason"] for alert in alerts.alerts] == ["daily_limit_reached"]
+
+
+@pytest.mark.asyncio
+async def test_karlancer_quota_message_pauses_before_final_click_and_reports(
+    tmp_path: Path,
+) -> None:
+    alerts = FakeLimitAlerts()
+    repository = FakeRepository()
+    page = FakePage(
+        html="<div>سهمیه ارسال پیشنهاد شما به پایان رسیده است؛ پلن خود را ارتقا دهید.</div>"
+    )
+
+    result = await ProposalSubmitter(
+        settings=settings(tmp_path),
+        repository=repository,
+        validator=ProposalValidator(),
+        limit_alerts=alerts,
+        clock=lambda: NOW,
+    ).submit(
+        page,
+        SubmissionCommand(project_id=uuid4(), idempotency_key="submit:site-limit"),
+    )
+
+    assert result.status == "paused_error"
+    assert result.reason == "platform_submission_limit"
+    assert ("click", FINAL_SUBMIT_CONTROL) not in page.events
+    assert repository.events[-1][0] == "pause"
+    assert [alert["reason"] for alert in alerts.alerts] == [
+        "platform_submission_limit"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_shadow_writes_sanitized_evidence_and_never_clicks_submit(
     tmp_path: Path,
 ) -> None:
@@ -386,6 +533,95 @@ async def test_shadow_writes_sanitized_evidence_and_never_clicks_submit(
     assert Path(result.html_path).is_relative_to(tmp_path)
     assert "private-token" not in Path(result.html_path).read_text(encoding="utf-8")
     assert any(event[0] == "preview" for event in repository.events)
+
+
+@pytest.mark.asyncio
+async def test_formatted_numeric_readback_is_accepted_before_final_click(
+    tmp_path: Path,
+) -> None:
+    repository = FakeRepository()
+    page = FakePage()
+    page.readback_overrides[PROPOSAL_BUDGET_INPUT] = "3,000,000 تومان"
+    page.readback_overrides[PROPOSAL_DURATION_INPUT] = "3 روز"
+
+    result = await ProposalSubmitter(
+        settings=settings(tmp_path),
+        repository=repository,
+        validator=ProposalValidator(),
+        clock=lambda: NOW,
+    ).submit(
+        page,
+        SubmissionCommand(project_id=uuid4(), idempotency_key="submit:formatted-readback"),
+    )
+
+    assert result.status == "submitted"
+    assert ("click", FINAL_SUBMIT_CONTROL) in page.events
+
+
+@pytest.mark.asyncio
+async def test_basic_submission_confirms_the_optional_upgrade_prompt(
+    tmp_path: Path,
+) -> None:
+    repository = FakeRepository()
+    page = FakePage(upsell_visible=True)
+
+    result = await ProposalSubmitter(
+        settings=settings(tmp_path),
+        repository=repository,
+        validator=ProposalValidator(),
+        clock=lambda: NOW,
+    ).submit(
+        page,
+        SubmissionCommand(project_id=uuid4(), idempotency_key="submit:no-upgrade"),
+    )
+
+    assert result.status == "submitted"
+    assert ("click", BASIC_SUBMIT_CONFIRM_SELECTOR) in page.events
+
+
+@pytest.mark.asyncio
+async def test_visible_success_message_confirms_when_modal_remains_open(
+    tmp_path: Path,
+) -> None:
+    repository = FakeRepository()
+    page = FakePage(
+        upsell_visible=True,
+        modal_hides=False,
+        success_visible=True,
+    )
+
+    result = await ProposalSubmitter(
+        settings=settings(tmp_path),
+        repository=repository,
+        validator=ProposalValidator(),
+        clock=lambda: NOW,
+    ).submit(
+        page,
+        SubmissionCommand(project_id=uuid4(), idempotency_key="submit:success-modal"),
+    )
+
+    assert result.status == "submitted"
+    assert ("wait", SUBMISSION_SUCCESS_SELECTOR, "visible") in page.events
+
+
+@pytest.mark.asyncio
+async def test_late_visible_success_after_wait_timeout_is_not_paused(tmp_path):
+    class LateSuccessPage(FakePage):
+        async def wait_for_selector(self, selector, **kwargs):
+            if selector == BID_MODAL_SELECTOR and kwargs.get("state") == "hidden":
+                self.success_visible = True
+                raise PlaywrightTimeoutError("success modal stayed open")
+            return await super().wait_for_selector(selector, **kwargs)
+
+    repository = FakeRepository()
+    page = LateSuccessPage(confirms=False, modal_hides=False)
+    result = await ProposalSubmitter(
+        settings=settings(tmp_path), repository=repository,
+        validator=ProposalValidator(), clock=lambda: NOW,
+    ).submit(page, SubmissionCommand(project_id=uuid4(), idempotency_key="late-success"))
+    assert result.status == "submitted"
+    assert page.events.count(("click", FINAL_SUBMIT_CONTROL)) == 1
+    assert repository.events[-1][0] == "complete"
 
 
 @pytest.mark.asyncio
@@ -558,3 +794,22 @@ async def test_preflight_blocks_closed_duplicate_login_and_challenge(
     assert result.status in {"blocked", "paused_error"}
     assert result.reason == reason
     assert ("click", FINAL_SUBMIT_CONTROL) not in page.events
+
+
+@pytest.mark.asyncio
+async def test_preflight_ignores_hidden_login_form_for_authenticated_page() -> None:
+    page = FakePage(
+        html=(
+            '<nav><a href="/panel/dashboard">داشبورد</a></nav>'
+            '<div hidden><input type="password"></div>'
+        )
+    )
+
+    assert await _browser_preflight(page) is None
+
+
+@pytest.mark.asyncio
+async def test_preflight_detects_completed_public_project() -> None:
+    page = FakePage(public_status="completed")
+
+    assert await _browser_preflight(page) == "project_closed"

@@ -265,7 +265,7 @@ class LLMProvider(Protocol):
 
 **Files:** `src/karlancer_agent/proposal/templates.py`, `proposal/generator.py`, `proposal/validator.py`, `tests/unit/proposal/test_generator.py`, `tests/unit/proposal/test_validator.py`
 
-- [ ] متن شروع و پایان تأییدشده کاربر به‌صورت ثابت و test snapshot ذخیره شود؛ لینک‌های YouTube/GitHub/LinkedIn دقیقاً حفظ شوند.
+- [ ] متن شروع و پایان تأییدشده کاربر به‌صورت ثابت و test snapshot ذخیره شود؛ هیچ لینک، نام شبکه اجتماعی یا دعوت به مشاهده نمونه‌کار خارج از سایت اضافه نشود.
 - [ ] تست تولید بدنه برای پروژه روشن، پروژه مبهم با یک سؤال و پروژه با حداکثر دو سؤال نوشته و fail اجرا شود.
 - [ ] generator فقط بخش میانی را از provider بگیرد و intro/outro را در کد اضافه کند.
 - [ ] validator وجود intro/outro، طول میانه، ۰ تا ۲ سؤال، اشاره مشخص به نیاز پروژه و نبود clichéهای ممنوع را بررسی کند.
@@ -403,7 +403,7 @@ class ProposalSubmitter:
 - خواندن صفحه و استخراج مبلغ/زمان: Tasks 5–6.
 - مهارت‌های دو‌زبانه، آموزشی و رد tool-only: Task 7 و ارزیابی Task 16.
 - provider قابل‌تعویض و عدم اتکا به usage تعاملی Codex: Task 8.
-- متن ثابت، لحن انسانی، حداکثر دو سؤال و منع اطلاعات تماس: Task 9.
+- متن ثابت، لحن انسانی، حداکثر دو سؤال و منع کامل لینک و اطلاعات تماس: Task 9.
 - shadow → assisted → auto و ارسال بدون تکرار: Tasks 10–12 و 16.
 - اولین پاسخ، گزارش یک‌باره و توقف کامل پاسخ‌گویی: Task 13.
 - اجرای ۲۴ساعته روی VPS و امکان اجرای پروژه‌های جداگانه دیگر: Tasks 14–15؛ هر agent باید Compose project name، شبکه، volume، DB/schema و resource limit مستقل داشته باشد.

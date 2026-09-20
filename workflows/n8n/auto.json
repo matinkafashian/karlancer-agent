@@ -1,0 +1,106 @@
+{
+  "id": "karlancerAuto001",
+  "name": "Karlancer - Auto Cycle",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "schedule-auto-cycle",
+      "name": "Check submission window",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://worker:8000/v1/jobs/auto",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-API-Key",
+              "value": "={{ $env.KARLANCER_INTERNAL_API_KEY }}"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{ 'karlancer-auto-' + $execution.id }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 900000
+        }
+      },
+      "id": "run-auto-cycle",
+      "name": "Run automatic cycle",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://worker:8000/v1/alerts/operational",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-API-Key",
+              "value": "={{ $env.KARLANCER_INTERNAL_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { notification_key: 'n8n-auto-error-' + $execution.id, title: 'خطای اجرای خودکار کارلنسر', body: 'شناسه اجرا: ' + $execution.id + '\\nعلت: ' + ($json.error?.message || $json.message || JSON.stringify($json).slice(0, 700)) } }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "report-auto-cycle-failure",
+      "name": "Report automatic cycle failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [780, 440],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "errorMessage": "Karlancer automatic cycle failed"
+      },
+      "id": "stop-auto-cycle-failure",
+      "name": "Stop after automatic cycle failure",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [1040, 440]
+    }
+  ],
+  "connections": {
+    "Check submission window": {
+      "main": [[{"node": "Run automatic cycle", "type": "main", "index": 0}]]
+    },
+    "Run automatic cycle": {
+      "main": [[], [{"node": "Report automatic cycle failure", "type": "main", "index": 0}]]
+    },
+    "Report automatic cycle failure": {
+      "main": [
+        [{"node": "Stop after automatic cycle failure", "type": "main", "index": 0}],
+        [{"node": "Stop after automatic cycle failure", "type": "main", "index": 0}]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {"executionOrder": "v1"},
+  "active": false,
+  "tags": []
+}

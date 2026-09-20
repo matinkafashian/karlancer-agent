@@ -23,6 +23,9 @@ class FakePage:
     async def content(self) -> str:
         return self._html
 
+    async def wait_for_timeout(self, timeout: float) -> None:
+        return None
+
     async def close(self) -> None:
         self.closed = True
 
@@ -71,7 +74,7 @@ class FakeManager:
 
 
 def make_session(
-    profile_dir: Path, pages: list[FakePage]
+    profile_dir: Path, pages: list[FakePage], proxy: dict[str, str] | None = None,
 ) -> tuple[BrowserSession, FakeManager, FakeChromium, FakeContext]:
     context = FakeContext(pages)
     chromium = FakeChromium(context)
@@ -80,6 +83,7 @@ def make_session(
     session = BrowserSession(
         profile_dir=profile_dir,
         headless=False,
+        proxy=proxy,
         playwright_factory=lambda: manager,
     )
     return session, manager, chromium, context
@@ -117,11 +121,23 @@ async def test_second_owner_of_same_profile_is_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_proxy_is_scoped_to_the_dedicated_browser_context(tmp_path: Path) -> None:
+    proxy = {"server": "socks5://iran-egress:1080", "username": "u", "password": "p"}
+    session, _, chromium, _ = make_session(tmp_path / "profile", [], proxy=proxy)
+    await session.start()
+    assert chromium.calls == [(
+        str(tmp_path / "profile"),
+        {"headless": False, "viewport": None, "proxy": proxy},
+    )]
+    await session.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("final_url", "html", "expected"),
     [
         (
-            "https://www.karlancer.com/dashboard",
+            "https://www.karlancer.com/panel/messages",
             '<a href="/logout">خروج</a><main>داشبورد من</main>',
             LoginStatus.SIGNED_IN,
         ),
@@ -131,7 +147,7 @@ async def test_second_owner_of_same_profile_is_rejected(tmp_path: Path) -> None:
             LoginStatus.EXPIRED,
         ),
         (
-            "https://www.karlancer.com/dashboard",
+            "https://www.karlancer.com/panel/messages",
             '<iframe title="reCAPTCHA"></iframe>',
             LoginStatus.CHALLENGE,
         ),

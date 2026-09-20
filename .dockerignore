@@ -1,0 +1,14 @@
+.env
+.git
+.venv
+.uv-cache
+.pytest_cache
+.pytest-tmp*
+.mypy_cache
+.ruff_cache
+__pycache__
+backups
+browser-profile
+data
+dist
+*.log

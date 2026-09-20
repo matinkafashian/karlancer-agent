@@ -13,10 +13,14 @@ dependencies = [
     "httpx>=0.28",
     "lxml>=5.3",
     "pydantic-settings>=2.7",
-    "playwright>=1.50",
+    "playwright==1.62.0",
     "pyyaml>=6.0",
     "sqlalchemy[asyncio]>=2.0",
+    "uvicorn>=0.34",
 ]
+
+[project.scripts]
+karlancer-agent = "karlancer_agent.cli:main"
 
 [dependency-groups]
 dev = [

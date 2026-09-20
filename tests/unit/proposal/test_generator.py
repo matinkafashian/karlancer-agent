@@ -3,6 +3,8 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from karlancer_agent.domain.models import ExtractedProject
 from karlancer_agent.llm.schemas import ProposalCore
 from karlancer_agent.proposal.generator import ProposalGenerator
@@ -66,7 +68,7 @@ def test_generator_wraps_project_specific_core_with_approved_fixed_text() -> Non
     assert draft.generated_at == generated_at
 
 
-def test_generator_preserves_the_user_approved_identity_and_portfolio_text() -> None:
+def test_generator_preserves_identity_but_never_adds_external_links() -> None:
     draft = ProposalGenerator().build(
         project=project(),
         core=valid_core(),
@@ -79,27 +81,26 @@ def test_generator_preserves_the_user_approved_identity_and_portfolio_text() -> 
     approved_intro = (
         "سلام، وقت بخیر.\n"
         "من متین کفاشیان هستم؛ دارای دکترای هوش مصنوعی و علوم کامپیوتر و چند مدرک "
-        "تخصصی هوش مصنوعی از آمریکا. چند روزی است که در این سایت نیز پروژه می‌پذیرم. "
-        "چند پروژه مشابه پروژه شما را قبلاً انجام داده‌ام و تقریباً به‌طور کامل متوجه نیاز "
-        "و نتیجه موردنظرتان شده‌ام."
+        "تخصصی هوش مصنوعی از آمریکا."
     )
-    approved_outro = (
-        "برای آشنایی بیشتر با سوابق و مشاهده تعدادی از پروژه‌هایم، لینک کانال یوتیوب، "
-        "گیت‌هاب و لینکدین را خدمتتان قرار می‌دهم. همچنین می‌توانید نام من را در گوگل "
-        "جست‌وجو کنید تا پروژه‌ها و سوابق بیشتری را که در سایت‌های مختلف منتشر شده‌اند "
-        "مشاهده کنید.\n\n"
-        "کانال یوتیوب:\nhttps://www.youtube.com/@matinkafashian_\n\n"
-        "گیت‌هاب:\nhttps://github.com/matinkafashian\n\n"
-        "لینکدین:\nhttps://www.linkedin.com/in/matinkafashian\n\n"
-        "اگر سؤال دیگری بود، در خدمتم."
-    )
+    approved_outro = "اگر سؤال دیگری بود، در خدمتم."
     assert draft.body.startswith(f"{approved_intro}\n\n")
     assert draft.body.endswith(f"\n\n{approved_outro}")
+    assert "چند روزی" not in draft.body
+    assert "چند پروژه مشابه" not in draft.body
+    assert "http" not in draft.body.lower()
+    assert "www." not in draft.body.lower()
+    assert "youtube" not in draft.body.lower()
+    assert "github" not in draft.body.lower()
+    assert "linkedin" not in draft.body.lower()
+    assert "تقریباً به‌طور کامل متوجه نیاز" not in draft.body
     assert len(draft.body.split()) <= 210
 
 
 def test_generator_adds_only_the_questions_supplied_by_analysis() -> None:
-    core = valid_core(questions=("سرور مقصد از قبل آماده است؟",))
+    core = valid_core(questions=("سرور مقصد از قبل آماده است؟",)).model_copy(
+        update={"question_reasons": ("آماده بودن سرور زمان استقرار را تغییر می‌دهد.",)}
+    )
 
     draft = ProposalGenerator().build(
         project=project(),
@@ -112,3 +113,48 @@ def test_generator_adds_only_the_questions_supplied_by_analysis() -> None:
 
     assert "سرور مقصد از قبل آماده است؟" in draft.body
     assert draft.body.count("؟") == 1
+
+
+def test_generator_preserves_complete_details_for_validator_instead_of_truncating() -> None:
+    repeated = " ".join(f"واژه{i}" for i in range(80))
+    core = ProposalCore(
+        project_understanding=repeated,
+        technical_approach=repeated,
+        questions=(repeated,),
+    )
+
+    draft = ProposalGenerator().build(
+        project=project(),
+        core=core,
+        provider_name="codex_cli",
+        model_name="test-model",
+        prompt_version="proposal-core-v1",
+        generated_at=datetime(2026, 9, 14, tzinfo=UTC),
+    )
+
+    middle = draft.body.removeprefix(f"{FIXED_INTRO}\n\n").removesuffix(f"\n\n{FIXED_OUTRO}")
+    assert repeated in middle
+    assert len(middle.split()) > 100
+    assert "…" not in middle
+
+
+def test_questions_default_to_empty() -> None:
+    core = ProposalCore(project_understanding="نیاز", technical_approach="روش")
+    assert core.questions == ()
+
+
+@pytest.mark.parametrize("reasons", ((), ("",), ("  ",), ("زمان استقرار", "هزینه سرور")))
+def test_unjustified_or_mismatched_questions_are_suppressed(reasons: tuple[str, ...]) -> None:
+    core = valid_core(questions=("سرور مقصد از قبل آماده است؟",)).model_copy(
+        update={"question_reasons": reasons}
+    )
+    draft = ProposalGenerator().build(
+        project=project(),
+        core=core,
+        provider_name="test",
+        model_name="test",
+        prompt_version="test",
+        generated_at=datetime(2026, 9, 1, tzinfo=UTC),
+    )
+    assert "سرور مقصد" not in draft.body
+    assert "؟" not in draft.body

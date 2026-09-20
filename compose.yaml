@@ -1,0 +1,119 @@
+name: ${COMPOSE_PROJECT_NAME:-karlancer}
+
+services:
+  postgres:
+    mem_limit: 1g
+    cpus: 1.0
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-karlancer}
+      POSTGRES_USER: ${POSTGRES_USER:-karlancer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-karlancer} -d ${POSTGRES_DB:-karlancer}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  worker:
+    mem_limit: 2g
+    cpus: 1.5
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-karlancer}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-karlancer}
+      BROWSER_PROFILE_DIR: /data/browser-profile
+      BROWSER_HEADLESS: "true"
+      CODEX_HOME: /data/codex
+      EVIDENCE_DIR: /data/evidence
+    volumes:
+      - browser-profile:/data/browser-profile
+      - codex-auth:/data/codex
+      - evidence:/data/evidence
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - /bin/sh
+      - -ec
+      - alembic upgrade head && exec uvicorn karlancer_agent.production:create_production_app --factory --host 0.0.0.0 --port 8000
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8000/health/live"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    logging: *default-logging
+
+  n8n:
+    mem_limit: 1500m
+    cpus: 1.0
+    image: docker.n8n.io/n8nio/n8n:${N8N_VERSION:-2.37.11}
+    environment:
+      GENERIC_TIMEZONE: Asia/Tehran
+      TZ: Asia/Tehran
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      KARLANCER_INTERNAL_API_KEY: ${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
+    ports:
+      - "127.0.0.1:5678:5678"
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./workflows/n8n:/workflows:ro
+    depends_on:
+      worker:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+  login:
+    mem_limit: 2g
+    cpus: 1.5
+    profiles: ["login"]
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-karlancer}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-karlancer}
+      BROWSER_PROFILE_DIR: /data/browser-profile
+      BROWSER_HEADLESS: "false"
+      DISPLAY: :99
+    volumes:
+      - browser-profile:/data/browser-profile
+    ports:
+      - "127.0.0.1:6080:6080"
+    command: ["/usr/local/bin/karlancer-login"]
+    restart: "no"
+    logging: *default-logging
+
+  codex-login:
+    mem_limit: 512m
+    cpus: 0.5
+    profiles: ["codex-auth"]
+    build: .
+    environment:
+      CODEX_HOME: /data/codex
+    volumes:
+      - codex-auth:/data/codex
+    command: ["/usr/local/bin/codex-login"]
+    stdin_open: true
+    tty: true
+    restart: "no"
+    logging: *default-logging
+
+volumes:
+  postgres-data:
+  browser-profile:
+  codex-auth:
+  evidence:
+  n8n-data:

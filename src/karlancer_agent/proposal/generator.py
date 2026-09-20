@@ -8,7 +8,7 @@ from karlancer_agent.proposal.templates import FIXED_INTRO, FIXED_OUTRO, PRICE_S
 
 
 class ProposalGenerator:
-    """The model supplies only the middle; identity and links stay deterministic."""
+    """The model supplies only the middle; approved fixed text stays deterministic."""
 
     def build(
         self,
@@ -25,7 +25,13 @@ class ProposalGenerator:
             core.technical_approach.strip(),
             PRICE_SENTENCE,
         ]
-        if core.questions:
+        # Missing justification is not permission to invent engagement questions.
+        if (
+            core.questions
+            and len(core.question_reasons) == len(core.questions)
+            and all(reason.strip() for reason in core.question_reasons)
+            and all(question.strip() for question in core.questions)
+        ):
             middle_parts.append("\n".join(_normalize_question(item) for item in core.questions))
 
         body = f"{FIXED_INTRO}\n\n{'\n\n'.join(middle_parts)}\n\n{FIXED_OUTRO}"
@@ -44,4 +50,3 @@ def _normalize_question(value: str) -> str:
     if question.endswith(("؟", "?")):
         return question
     return f"{question}؟"
-

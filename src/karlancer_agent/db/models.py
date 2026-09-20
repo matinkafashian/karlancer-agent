@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -191,6 +192,35 @@ class SourceCursorRow(Base):
     )
 
 
+class ProviderCircuitRow(Base):
+    """Durable model-provider cooldown shared across worker restarts."""
+
+    __tablename__ = "provider_circuits"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('closed', 'cooldown', 'hard_paused')",
+            name="ck_provider_circuits_valid_status",
+        ),
+        CheckConstraint(
+            "consecutive_failures >= 0",
+            name="ck_provider_circuits_nonnegative_failures",
+        ),
+    )
+
+    provider: Mapped[str] = mapped_column(String(128), primary_key=True)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="closed", server_default="closed"
+    )
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    consecutive_failures: Mapped[int] = mapped_column(
+        nullable=False, default=0, server_default=text("0")
+    )
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
+    )
+
+
 class OutboxEventRow(Base):
     """Recoverable notification waiting to be delivered externally."""
 
@@ -208,6 +238,10 @@ class OutboxEventRow(Base):
         DateTime(timezone=True), nullable=False, default=utc_now
     )
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivery_attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+
 
 
 class ApprovalTokenRow(Base):

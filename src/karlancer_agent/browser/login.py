@@ -14,6 +14,7 @@ async def run_login() -> None:
     session = BrowserSession(
         profile_dir=settings.browser_profile_dir,
         headless=False,
+        proxy=settings.browser_proxy,
     )
     await session.start()
     try:

@@ -67,6 +67,8 @@ class PageLike(Protocol):
 
     async def goto(self, url: str, **kwargs: Any) -> object: ...
 
+    async def wait_for_selector(self, selector: str, **kwargs: Any) -> object: ...
+
     async def content(self) -> str: ...
 
 
@@ -75,6 +77,13 @@ class ProjectExtractor:
 
     async def extract(self, page: PageLike, url: str) -> ExtractedProject:
         await page.goto(url, wait_until="domcontentloaded")
+        await page.wait_for_selector(PROJECT_ROOT, state="visible", timeout=30_000)
+        # Karlancer replaces the server-rendered card during Angular hydration.
+        # Let that single replacement finish, then require the final card.
+        wait_for_timeout = getattr(page, "wait_for_timeout", None)
+        if wait_for_timeout is not None:
+            await wait_for_timeout(2_000)
+            await page.wait_for_selector(PROJECT_ROOT, state="visible", timeout=30_000)
         return parse_project_page(await page.content(), page.url)
 
 

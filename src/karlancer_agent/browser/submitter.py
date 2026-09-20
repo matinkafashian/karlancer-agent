@@ -2,7 +2,7 @@
 
 import hashlib
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -11,16 +11,19 @@ from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from bs4 import BeautifulSoup
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from pydantic import BaseModel, ConfigDict, Field
 
 from karlancer_agent.browser.selectors import (
+    BASIC_SUBMIT_CONFIRM_CONTROL,
     BID_MODAL,
     CONTINUE_TO_BID_CONTROL,
     FINAL_SUBMIT_CONTROL,
     PROPOSAL_BODY_INPUT,
     PROPOSAL_BUDGET_INPUT,
     PROPOSAL_DURATION_INPUT,
-    SUBMIT_CONTROL,
+    SUBMISSION_SUCCESS_MESSAGE,
+    VISIBLE_SUBMIT_CONTROL,
 )
 from karlancer_agent.config import RunMode, Settings
 from karlancer_agent.db.repositories import ProjectRepository
@@ -86,6 +89,8 @@ class LocatorLike(Protocol):
 
     async def is_visible(self) -> bool: ...
 
+    async def evaluate(self, expression: str) -> object: ...
+
 
 class SubmissionPage(Protocol):
     @property
@@ -100,6 +105,18 @@ class SubmissionPage(Protocol):
     async def screenshot(self, **kwargs: Any) -> bytes: ...
 
     async def content(self) -> str: ...
+
+
+class SubmissionLimitAlerts(Protocol):
+    async def notify(
+        self,
+        *,
+        project_id: UUID,
+        title: str,
+        project_url: str,
+        reason: Literal["daily_limit_reached", "platform_submission_limit"],
+        observed_at: datetime,
+    ) -> bool: ...
 
 
 def evaluate_submission_gate(value: SubmissionGateInput) -> SubmissionGateDecision:
@@ -151,14 +168,18 @@ class ProposalSubmitter:
         settings: Settings,
         repository: ProjectRepository,
         validator: ProposalValidator,
+        limit_alerts: SubmissionLimitAlerts | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         confirmation_timeout_ms: int = 15_000,
+        pause_check: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         self._settings = settings
         self._repository = repository
         self._validator = validator
+        self._limit_alerts = limit_alerts
         self._clock = clock
         self._confirmation_timeout_ms = confirmation_timeout_ms
+        self._pause_check = pause_check
         self._evidence_dir = settings.evidence_dir.resolve()
         profile = settings.browser_profile_dir.resolve()
         if self._evidence_dir.parent == self._evidence_dir:
@@ -169,6 +190,8 @@ class ProposalSubmitter:
     async def submit(
         self, page: SubmissionPage, command: SubmissionCommand
     ) -> SubmissionResult:
+        if self._pause_check is not None and await self._pause_check():
+            return self._blocked(command.project_id, "system_paused")
         material = await self._repository.submission_material(command.project_id)
         if material is None:
             return self._blocked(command.project_id, "submission_material_missing")
@@ -202,6 +225,13 @@ class ProposalSubmitter:
             )
         )
         if gate.outcome is SubmissionGateOutcome.BLOCKED:
+            if "daily_limit_reached" in gate.reasons:
+                await self._notify_limit(
+                    command.project_id,
+                    project=project,
+                    reason="daily_limit_reached",
+                    observed_at=now,
+                )
             return self._blocked(
                 command.project_id, ",".join(gate.reasons), current_state
             )
@@ -209,6 +239,13 @@ class ProposalSubmitter:
             await page.goto(str(project.proposal_form_url), wait_until="domcontentloaded")
             preflight_error = await _browser_preflight(page)
             if preflight_error:
+                if preflight_error == "platform_submission_limit":
+                    await self._notify_limit(
+                        command.project_id,
+                        project=project,
+                        reason="platform_submission_limit",
+                        observed_at=now,
+                    )
                 return self._blocked(command.project_id, preflight_error, current_state)
             readback_matches = await self._fill_and_verify(
                 page, project=project, body=body
@@ -253,27 +290,49 @@ class ProposalSubmitter:
                 "duplicate": "duplicate_submission",
                 "daily_limit": "daily_limit_reached",
                 "state_conflict": "invalid_project_state",
+                "submission_interval": "submission_interval",
+                "platform_paused": "platform_submission_limit",
+                "system_paused": "system_paused",
             }[reservation]
+            if reason == "daily_limit_reached":
+                await self._notify_limit(
+                    command.project_id,
+                    project=project,
+                    reason="daily_limit_reached",
+                    observed_at=now,
+                )
             return self._blocked(command.project_id, reason, current_state)
 
         try:
             await page.goto(str(project.proposal_form_url), wait_until="domcontentloaded")
             preflight_error = await _browser_preflight(page)
             if preflight_error:
-                return await self._pause(
+                paused = await self._pause(
                     page,
                     command.project_id,
                     reason=preflight_error,
                     label="preflight",
                 )
+                if preflight_error == "platform_submission_limit":
+                    await self._notify_limit(
+                        command.project_id,
+                        project=project,
+                        reason="platform_submission_limit",
+                        observed_at=now,
+                    )
+                return paused
             readback_matches = await self._fill_and_verify(
                 page, project=project, body=body
             )
-        except Exception:
+        except Exception as error:
+            detail = " ".join(str(error).split())[:240]
             return await self._pause(
                 page,
                 command.project_id,
-                reason="form_preparation_failed",
+                reason=(
+                    f"form_preparation_failed:{type(error).__name__}:"
+                    f"{detail or 'unknown'}"
+                ),
                 label="preparation-failed",
             )
         if not readback_matches:
@@ -281,23 +340,46 @@ class ProposalSubmitter:
                 page, command.project_id, reason="form_readback_mismatch", label="mismatch"
             )
 
+        if self._pause_check is not None and await self._pause_check():
+            return await self._pause(
+                page, command.project_id, reason="system_paused", label="system-paused",
+            )
         try:
             await page.locator(FINAL_SUBMIT_CONTROL).click()
-            await page.wait_for_selector(
-                BID_MODAL,
-                state="hidden",
-                timeout=self._confirmation_timeout_ms,
-            )
-            await page.goto(str(project.canonical_url), wait_until="domcontentloaded")
-            if not _has_submission_confirmation(await page.content()):
-                raise RuntimeError("submission confirmation marker missing")
+            basic_submit = page.locator(BASIC_SUBMIT_CONFIRM_CONTROL)
+            if await basic_submit.is_visible():
+                await basic_submit.click()
+            try:
+                await page.wait_for_selector(
+                    SUBMISSION_SUCCESS_MESSAGE,
+                    state="visible",
+                    timeout=max(45_000, self._confirmation_timeout_ms),
+                )
+            except Exception:
+                await page.wait_for_selector(
+                    BID_MODAL,
+                    state="hidden",
+                    timeout=self._confirmation_timeout_ms,
+                )
+                await page.goto(
+                    str(project.canonical_url), wait_until="domcontentloaded"
+                )
+                if not _has_submission_confirmation(await page.content()):
+                    raise RuntimeError("submission confirmation marker missing") from None
         except Exception:
-            return await self._pause(
-                page,
-                command.project_id,
-                reason="ambiguous_after_click",
-                label="ambiguous",
-            )
+            # The success dialog can arrive while the fallback is timing out.
+            # Require visible success, not a hidden template in the page HTML.
+            try:
+                confirmed = await page.locator(SUBMISSION_SUCCESS_MESSAGE).is_visible()
+            except Exception:
+                confirmed = False
+            if not confirmed:
+                return await self._pause(
+                    page,
+                    command.project_id,
+                    reason="ambiguous_after_click",
+                    label="ambiguous",
+                )
 
         try:
             evidence = await self._capture(page, command.project_id, "submitted")
@@ -338,10 +420,50 @@ class ProposalSubmitter:
             evidence_url=page.url,
         )
 
+    async def _notify_limit(
+        self,
+        project_id: UUID,
+        *,
+        project: ExtractedProject,
+        reason: Literal["daily_limit_reached", "platform_submission_limit"],
+        observed_at: datetime,
+    ) -> None:
+        if self._limit_alerts is None:
+            return
+        await self._limit_alerts.notify(
+            project_id=project_id,
+            title=project.title,
+            project_url=str(project.canonical_url),
+            reason=reason,
+            observed_at=observed_at,
+        )
+
     async def _fill_and_verify(
         self, page: SubmissionPage, *, project: ExtractedProject, body: str
     ) -> bool:
-        await page.locator(SUBMIT_CONTROL).click()
+        await page.wait_for_selector(
+            VISIBLE_SUBMIT_CONTROL,
+            state="visible",
+            timeout=self._confirmation_timeout_ms,
+        )
+        await page.locator(VISIBLE_SUBMIT_CONTROL).click()
+        try:
+            await page.wait_for_selector(BID_MODAL, state="visible", timeout=3_000)
+        except PlaywrightTimeoutError:
+            # The initial server-rendered control can be replaced during Angular
+            # hydration. Retry the real visible control once; never open the
+            # hidden Bootstrap trigger because it creates an empty modal.
+            await page.wait_for_selector(
+                VISIBLE_SUBMIT_CONTROL,
+                state="visible",
+                timeout=self._confirmation_timeout_ms,
+            )
+            await page.locator(VISIBLE_SUBMIT_CONTROL).click()
+            await page.wait_for_selector(
+                BID_MODAL,
+                state="visible",
+                timeout=self._confirmation_timeout_ms,
+            )
         continue_control = page.locator(CONTINUE_TO_BID_CONTROL)
         if await continue_control.is_visible():
             await continue_control.click()
@@ -474,6 +596,7 @@ def _decimal_text(value: Decimal) -> str:
 def _normalized_number(value: str) -> Decimal | None:
     normalized = value.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
     normalized = re.sub(r"[,٬،\s]", "", normalized)
+    normalized = re.sub(r"(?:تومان|روز)$", "", normalized)
     try:
         return Decimal(normalized)
     except Exception:  # Invalid browser text is a safe mismatch, not an exception path.
@@ -505,18 +628,74 @@ def _has_submission_confirmation(value: str) -> bool:
 async def _browser_preflight(page: SubmissionPage) -> str | None:
     """Detect obvious expired-login and anti-bot pages before touching the form."""
 
+    public_status = await _public_project_status(page)
+    if public_status in {
+        "completed",
+        "in progress",
+        "cancelled",
+        "canceled",
+        "expired",
+        "deleted",
+    }:
+        return "project_closed"
     html = (await page.content()).lower()
     url = page.url.lower()
-    if "/login" in url or re.search(r"<input[^>]+type=[\"']password[\"']", html):
+    has_authenticated_navigation = bool(
+        re.search(
+            r"href=[\"']/panel/(?:dashboard|messages|bids|profile)(?:[\"'/])",
+            html,
+        )
+    )
+    has_password_input = bool(
+        re.search(r"<input[^>]+type=[\"']password[\"']", html)
+    )
+    if "/login" in url or (has_password_input and not has_authenticated_navigation):
         return "login_required"
     challenge_markers = ("g-recaptcha", "h-captcha", "hcaptcha", "cf-chl-", "کپچا")
     if any(marker in html for marker in challenge_markers):
         return "browser_challenge"
+    submission_limit_markers = (
+        "حساب کاربری شما محدود شده",
+        "حساب شما محدود شده",
+        "حساب کاربری شما مسدود شده",
+        "سهمیه ارسال پیشنهاد شما به پایان",
+        "سهمیه ثبت پیشنهاد شما به پایان",
+        "برای ارسال پیشنهاد پلن خود را ارتقا",
+        "برای ثبت پیشنهاد پلن خود را ارتقا",
+        "امکان ارسال پیشنهاد جدید ندارید",
+        "امکان ثبت پیشنهاد جدید ندارید",
+    )
+    if any(marker in html for marker in submission_limit_markers):
+        return "platform_submission_limit"
     if any(marker in html for marker in ("پیشنهاد شما ثبت شده", "قبلاً پیشنهاد")):
         return "already_submitted"
     if any(marker in html for marker in ("پروژه بسته شده", "پایان یافته")):
         return "project_closed"
     return None
+
+
+async def _public_project_status(page: SubmissionPage) -> str | None:
+    """Read Karlancer's public status; failure falls back to page checks."""
+
+    evaluate = getattr(page, "evaluate", None)
+    if evaluate is None:
+        return None
+    try:
+        value = await evaluate(
+            """
+            async () => {
+              const match = location.pathname.match(/-([a-z0-9]+)[/]?$/i);
+              if (!match) return null;
+              const response = await fetch(`/api/publics/projects/${match[1]}`);
+              if (!response.ok) return null;
+              const payload = await response.json();
+              return payload?.data?.status ?? null;
+            }
+            """
+        )
+    except Exception:
+        return None
+    return str(value).strip().lower() if value else None
 
 
 def _remove_expired_evidence(directory: Path, *, before: datetime) -> None:

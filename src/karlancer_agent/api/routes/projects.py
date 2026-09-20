@@ -1,12 +1,15 @@
 """Idempotent internal commands and sanitized project reads."""
 
+import asyncio
 import secrets
 from typing import cast
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi import APIRouter, Header, HTTPException, Query, Request, status
 
 from karlancer_agent.api.dependencies import ApplicationServices
+from karlancer_agent.services.auto_cycle import AutoCycleResult
+from karlancer_agent.services.notifications import SystemAlert
 from karlancer_agent.services.pipeline import PipelineRunResult, ProjectStageResult
 
 router = APIRouter(prefix="/v1", tags=["projects"])
@@ -46,6 +49,59 @@ async def ingest(
     return await services.pipeline.ingest(
         idempotency_key=_require_idempotency_key(idempotency_key)
     )
+
+
+@router.post("/jobs/shadow", response_model=PipelineRunResult)
+async def shadow(
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    internal_key: str | None = Header(default=None, alias="X-Internal-API-Key"),
+) -> PipelineRunResult:
+    services = _authorize(request, internal_key)
+    return await services.pipeline.run_once(
+        idempotency_key=_require_idempotency_key(idempotency_key)
+    )
+
+
+@router.post("/jobs/auto", response_model=AutoCycleResult)
+async def auto(
+    request: Request,
+    bootstrap_limit: int | None = Query(default=None, ge=1, le=10),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    internal_key: str | None = Header(default=None, alias="X-Internal-API-Key"),
+) -> AutoCycleResult:
+    services = _authorize(request, internal_key)
+    if services.auto_cycle is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="automatic cycle is not configured",
+        )
+    key = _require_idempotency_key(idempotency_key)
+    lock = cast(asyncio.Lock, request.app.state.auto_cycle_lock)
+    async with lock:
+        return await services.auto_cycle.run_once(
+            idempotency_key=key, bootstrap_limit=bootstrap_limit,
+        )
+
+
+@router.post("/alerts/operational")
+async def operational_alert(
+    alert: SystemAlert,
+    request: Request,
+    internal_key: str | None = Header(default=None, alias="X-Internal-API-Key"),
+) -> dict[str, bool]:
+    services = _authorize(request, internal_key)
+    if services.pause_controller is not None:
+        changed = await services.pause_controller.pause_system(reason=alert.title)
+        if not changed:
+            return {"delivered": False}
+    if services.operational_notifier is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="operational notifications are not configured",
+        )
+    delivered = await services.operational_notifier.queue_and_dispatch(alert)
+    return {"delivered": delivered}
 
 
 @router.post("/projects/{project_id}/analyze", response_model=ProjectStageResult)

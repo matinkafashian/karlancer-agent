@@ -6,10 +6,15 @@ from uuid import UUID
 
 from karlancer_agent.config import Settings
 from karlancer_agent.services.approval import ApprovalCommandResult
+from karlancer_agent.services.auto_cycle import AutoCycleResult
+from karlancer_agent.services.notifications import SystemAlert
 from karlancer_agent.services.pipeline import PipelineRunResult, ProjectStageResult
+from karlancer_agent.services.reply_watcher import ReplyWatchRunResult
 
 
 class PipelineService(Protocol):
+    async def run_once(self, *, idempotency_key: str) -> PipelineRunResult: ...
+
     async def ingest(self, *, idempotency_key: str) -> PipelineRunResult: ...
 
     async def analyze(self, project_id: UUID) -> ProjectStageResult: ...
@@ -23,6 +28,26 @@ class ProjectReader(Protocol):
 
 class ReadinessChecker(Protocol):
     async def check(self) -> dict[str, bool]: ...
+
+
+class ReplyWatchRunner(Protocol):
+    async def run_once(self) -> ReplyWatchRunResult: ...
+
+
+class AutoCycleRunner(Protocol):
+    async def run_once(
+        self, *, idempotency_key: str, bootstrap_limit: int | None
+    ) -> AutoCycleResult: ...
+
+
+class OperationalAlertNotifier(Protocol):
+    async def queue_and_dispatch(self, alert: SystemAlert) -> bool: ...
+
+
+class SystemPauseController(Protocol):
+    async def is_system_paused(self) -> bool: ...
+
+    async def pause_system(self, *, reason: str) -> bool: ...
 
 
 class ApprovalCommands(Protocol):
@@ -46,3 +71,7 @@ class ApplicationServices:
     projects: ProjectReader
     readiness: ReadinessChecker
     approvals: ApprovalCommands | None = None
+    reply_watch: ReplyWatchRunner | None = None
+    auto_cycle: AutoCycleRunner | None = None
+    operational_notifier: OperationalAlertNotifier | None = None
+    pause_controller: SystemPauseController | None = None

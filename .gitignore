@@ -5,6 +5,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .pytest-tmp*/
+.test-*/
 .mypy_cache/
 .ruff_cache/
 .coverage
@@ -14,6 +15,7 @@ build/
 *.egg-info/
 
 # Runtime state and secrets
+.secrets/
 browser-profile/
 playwright/.auth/
 data/
@@ -21,6 +23,9 @@ backups/
 *.dump
 *.sql.gz
 *.log
+diagnostics/
+work/
+.cursor/
 
 # IDE and OS files
 .idea/

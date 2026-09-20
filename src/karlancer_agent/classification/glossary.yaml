@@ -21,6 +21,14 @@ positive:
       - django
       - flask
 
+  ai_education:
+    strong:
+      - آموزش هوش مصنوعی
+      - تدریس هوش مصنوعی
+      - artificial intelligence training
+      - teach artificial intelligence
+      - ai training
+
   api_integration:
     strong:
       - rest api
@@ -223,6 +231,7 @@ hard_negative:
     - no coding
 
 programming_markers:
+  - api
   - python
   - پایتون
   - برنامه نویسی
