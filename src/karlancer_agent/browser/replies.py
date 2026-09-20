@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, unquote, urljoin, urlsplit, urlunsplit
 from uuid import UUID
 
 from bs4 import BeautifulSoup, Tag
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from pydantic import AnyHttpUrl, AwareDatetime, BaseModel, ConfigDict
 
 from karlancer_agent.domain.models import FirstReply
@@ -169,7 +170,12 @@ class KarlancerReplyReader:
         if target.conversation_url is not None and _room_id(str(target.conversation_url)):
             direct_url = str(target.conversation_url)
             await page.goto(direct_url, wait_until="commit")
-            snapshot = await self._snapshot(page, expected_room=_room_id(direct_url))
+            try:
+                snapshot = await self._snapshot(page, expected_room=_room_id(direct_url))
+            except PlaywrightTimeoutError:
+                # A stored room can disappear or redirect after Karlancer changes the
+                # conversation list. Fall back to a fresh read-only room discovery.
+                snapshot = None
             if snapshot is not None:
                 room_url, html = snapshot
                 scan = parse_conversation(

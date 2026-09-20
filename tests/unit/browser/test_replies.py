@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from karlancer_agent.browser.replies import (
     KarlancerReplyReader,
@@ -326,6 +327,34 @@ async def test_reader_uses_stored_room_without_listing_rooms():
     assert scan.first_reply is not None
     assert page.events[0] == ("goto", CONVERSATION_URL)
     assert not any(event[0] == "click-room" for event in page.events)
+
+
+@pytest.mark.asyncio
+async def test_reader_falls_back_when_stored_room_is_stale():
+    class StaleStoredRoomPage(FakeMessagesPage):
+        async def wait_for_selector(self, selector: str, **kwargs: object) -> None:
+            self.events.append(("wait", selector))
+            if selector == "#messageBox app-room-messages:not(.d-none)" and self.current is None:
+                raise PlaywrightTimeoutError("stored room is no longer visible")
+
+    page = StaleStoredRoomPage([FIXTURE.read_text(encoding="utf-8")])
+    target = ReplyWatchTarget(
+        project_id="11111111-1111-1111-1111-111111111111",
+        title="test",
+        project_url=PROJECT_URL,
+        project_summary="test",
+        submitted_at=OBSERVED_AT,
+        conversation_url=CONVERSATION_URL,
+    )
+
+    scan = await KarlancerReplyReader(clock=lambda: OBSERVED_AT).observe(page, target)
+
+    assert scan.first_reply is not None
+    assert page.events[:3] == [
+        ("goto", CONVERSATION_URL),
+        ("wait", "#messageBox app-room-messages:not(.d-none)"),
+        ("goto", "https://www.karlancer.com/panel/messages"),
+    ]
 
 
 @pytest.mark.asyncio
