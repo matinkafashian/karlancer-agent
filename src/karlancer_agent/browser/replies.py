@@ -189,8 +189,6 @@ class KarlancerReplyReader:
                     self._room_snapshots.append(snapshot)
                     return scan
         if self._rooms_loaded:
-            if self._discovery_truncated:
-                raise RuntimeError("room discovery limit reached; unmatched target needs review")
             return ConversationScan.model_validate(
                 {"matched_project": False, "conversation_url": messages_url}
             )
@@ -226,8 +224,9 @@ class KarlancerReplyReader:
         self._discovery_truncated = await page.locator(".room-item").count() > self._max_rooms
         if matched is not None:
             return matched
-        if self._discovery_truncated:
-            raise RuntimeError("room discovery limit reached; unmatched target needs review")
+        # A target outside the bounded recent-room window is not proof of a
+        # failure. Leave it pending for a later scan instead of stopping every
+        # proposal and reply workflow because of one older conversation.
         return ConversationScan.model_validate(
             {"matched_project": False, "conversation_url": messages_url}
         )

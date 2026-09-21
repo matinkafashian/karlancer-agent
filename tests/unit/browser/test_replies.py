@@ -439,13 +439,15 @@ async def test_reader_recounts_rooms_loaded_during_discovery_but_keeps_limit():
     scan = await KarlancerReplyReader(clock=lambda: OBSERVED_AT, max_rooms=2).observe(page, target)
     assert scan.first_reply is not None
     limited = GrowingPage([unrelated])
-    with pytest.raises(RuntimeError, match="room discovery limit"):
-        await KarlancerReplyReader(clock=lambda: OBSERVED_AT, max_rooms=1).observe(limited, target)
+    limited_scan = await KarlancerReplyReader(
+        clock=lambda: OBSERVED_AT, max_rooms=1
+    ).observe(limited, target)
+    assert limited_scan.matched_project is False
     assert len([event for event in limited.events if event[0] == "click-room"]) == 1
 
 
 @pytest.mark.asyncio
-async def test_unmatched_target_beyond_room_limit_is_not_silently_ignored():
+async def test_unmatched_target_beyond_room_limit_stays_pending_without_global_failure():
     unrelated = FIXTURE.read_text(encoding="utf-8").replace("2m6m20w5w850", "different-project")
     page = FakeMessagesPage([unrelated, FIXTURE.read_text(encoding="utf-8")])
     target = ReplyWatchTarget(
@@ -455,5 +457,7 @@ async def test_unmatched_target_beyond_room_limit_is_not_silently_ignored():
         project_summary="Synthetic",
         submitted_at=OBSERVED_AT,
     )
-    with pytest.raises(RuntimeError, match="room discovery limit"):
-        await KarlancerReplyReader(clock=lambda: OBSERVED_AT, max_rooms=1).observe(page, target)
+    scan = await KarlancerReplyReader(clock=lambda: OBSERVED_AT, max_rooms=1).observe(
+        page, target
+    )
+    assert scan.matched_project is False
