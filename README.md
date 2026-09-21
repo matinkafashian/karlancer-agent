@@ -77,8 +77,8 @@ docker compose -p karlancer -f compose.yaml -f compose.production.yaml exec -T n
   n8n import:workflow --separate --input=/workflows
 ```
 
-4. Activate only these workflows in n8n: Ingest, Auto Cycle, and First Reply Watch. Keep Shadow
-   inactive in automatic mode.
+4. Activate only Ingest and Auto Cycle in n8n. Keep First Reply Watch and Shadow inactive;
+   near-live reply monitoring is owned by the worker background task.
 5. Create the authenticated Karlancer browser profile and Codex login as described in
    [deployment.md](docs/operations/deployment.md).
 

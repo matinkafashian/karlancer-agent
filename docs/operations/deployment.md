@@ -48,8 +48,9 @@ ssh -L 5678:127.0.0.1:5678 your-user@SERVER_IP
 ```
 
 Visit `http://127.0.0.1:5678`, create the n8n owner, inspect the imported workflow, and
-activate `ingest.json` (every 30 minutes), `auto.json` (checks each minute; submits
-only when due), and `reply-watch.json`. Keep `shadow.json` inactive in automatic mode.
+activate `ingest.json` (every 30 minutes) and `auto.json` (checks each minute; submits
+only when due). Keep `reply-watch.json` and `shadow.json` inactive in automatic mode;
+the worker background task owns near-live reply monitoring.
 The automatic cycle consumes the stored queue and does not ingest. Importing updated
 exports does not by itself verify or activate the schedules in an existing n8n instance.
 
