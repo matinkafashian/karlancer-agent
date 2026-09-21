@@ -32,10 +32,7 @@ async def reply_watch(
         )
     lock = cast(asyncio.Lock, request.app.state.reply_watch_lock)
     if lock.locked():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="reply watch is already running",
-        )
+        return ReplyWatchRunResult(projects_checked=0, notifications_sent=0)
     try:
         async with lock:
             return await services.reply_watch.run_once()

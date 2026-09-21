@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 import pytest
 
@@ -34,6 +36,19 @@ class FakeRunner:
         self.closed = True
 
 
+class BlockingRunner(FakeRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def run_once(self) -> ReplyWatchRunResult:
+        self.calls += 1
+        self.started.set()
+        await self.release.wait()
+        return ReplyWatchRunResult(projects_checked=2, notifications_sent=1)
+
+
 @pytest.mark.asyncio
 async def test_reply_watch_endpoint_requires_secret_and_runs_once() -> None:
     runner = FakeRunner()
@@ -68,3 +83,23 @@ async def test_reply_watch_endpoint_fails_closed_for_expired_login() -> None:
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Karlancer login requires attention"
+
+
+@pytest.mark.asyncio
+async def test_reply_watch_endpoint_treats_concurrent_live_scan_as_successful_noop() -> None:
+    runner = BlockingRunner()
+    app = create_reply_api(settings=settings(), runner=runner)
+    headers = {"X-Internal-API-Key": "internal-secret-key"}
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        active = asyncio.create_task(client.post("/v1/jobs/reply-watch", headers=headers))
+        await runner.started.wait()
+        overlapping = await client.post("/v1/jobs/reply-watch", headers=headers)
+        runner.release.set()
+        completed = await active
+
+    assert overlapping.status_code == 200
+    assert overlapping.json() == {"projects_checked": 0, "notifications_sent": 0}
+    assert completed.status_code == 200
+    assert runner.calls == 1

@@ -60,10 +60,7 @@ def create_reply_api(
     ) -> ReplyWatchRunResult:
         authorize(internal_key)
         if run_lock.locked():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="reply watch is already running",
-            )
+            return ReplyWatchRunResult(projects_checked=0, notifications_sent=0)
         try:
             async with run_lock:
                 return await resolved_runner.run_once()
