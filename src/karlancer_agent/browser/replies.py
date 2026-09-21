@@ -239,7 +239,12 @@ class KarlancerReplyReader:
         expected_room: str | None = None,
         previous: tuple[str, str] | None = None,
     ) -> tuple[str, str] | None:
-        await page.wait_for_selector(_ACTIVE_ROOM, state="visible", timeout=10_000)
+        try:
+            await page.wait_for_selector(_ACTIVE_ROOM, state="visible", timeout=10_000)
+        except PlaywrightTimeoutError:
+            # An individual room may be stale or still loading. It is not an
+            # account-wide outage; skip it and continue the bounded discovery.
+            return None
         last = None
         for _ in range(8):
             await page.wait_for_timeout(250)

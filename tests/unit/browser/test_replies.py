@@ -358,6 +358,30 @@ async def test_reader_falls_back_when_stored_room_is_stale():
 
 
 @pytest.mark.asyncio
+async def test_reader_skips_a_stale_room_during_discovery():
+    class OneStaleRoomPage(FakeMessagesPage):
+        async def wait_for_selector(self, selector: str, **kwargs: object) -> None:
+            self.events.append(("wait", selector))
+            if selector == "#messageBox app-room-messages:not(.d-none)" and self.current == 0:
+                raise PlaywrightTimeoutError("first room is still loading")
+
+    page = OneStaleRoomPage(["<html></html>", FIXTURE.read_text(encoding="utf-8")])
+    target = ReplyWatchTarget(
+        project_id="11111111-1111-1111-1111-111111111111",
+        title="test",
+        project_url=PROJECT_URL,
+        project_summary="test",
+        submitted_at=OBSERVED_AT,
+    )
+
+    scan = await KarlancerReplyReader(clock=lambda: OBSERVED_AT).observe(page, target)
+
+    assert scan.matched_project is True
+    assert scan.first_reply is not None
+    assert ("click-room", 1) in page.events
+
+
+@pytest.mark.asyncio
 async def test_snapshot_rejects_wrong_room_and_stale_content():
     reader = KarlancerReplyReader()
     html = FIXTURE.read_text(encoding="utf-8")
