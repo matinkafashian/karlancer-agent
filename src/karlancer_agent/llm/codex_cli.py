@@ -180,11 +180,30 @@ class CodexCLIProvider(StructuredLLMProvider):
 
 
 def _json_schema(model: type[BaseModel]) -> dict[str, object]:
-    return model.model_json_schema()
+    schema = model.model_json_schema()
+    _require_all_object_properties(schema)
+    return schema
+
+
+def _require_all_object_properties(value: object) -> None:
+    """Make Pydantic defaults compatible with Codex strict output schemas."""
+
+    if isinstance(value, dict):
+        properties = value.get("properties")
+        if isinstance(properties, dict):
+            value["required"] = list(properties)
+        for nested in value.values():
+            _require_all_object_properties(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            _require_all_object_properties(nested)
 
 
 def _classify_failure(stderr: str) -> RuntimeError | None:
-    normalized = " ".join(stderr.lower().split())
+    # Codex echoes the user prompt before a structured error. Classifying the
+    # whole stream can mistake words in project text for an actual quota error.
+    error_text = stderr.rsplit("ERROR:", 1)[-1] if "ERROR:" in stderr else stderr
+    normalized = " ".join(error_text.lower().split())
     auth_markers = (
         "not logged in",
         "run codex login",

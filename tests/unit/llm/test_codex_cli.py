@@ -165,6 +165,27 @@ async def test_quota_error_is_not_retried() -> None:
     assert timedelta(hours=4, minutes=59) < remaining <= timedelta(hours=5)
 
 
+def test_output_schema_requires_fields_that_have_pydantic_defaults() -> None:
+    from karlancer_agent.llm.codex_cli import _json_schema
+    from karlancer_agent.llm.schemas import ProposalCore
+
+    schema = _json_schema(ProposalCore)
+
+    assert set(schema["required"]) == set(schema["properties"])
+
+
+def test_prompt_words_do_not_turn_configuration_error_into_quota_error() -> None:
+    from karlancer_agent.llm.codex_cli import _classify_failure
+
+    stderr = (
+        "user prompt discussing a usage limit reached\n"
+        "ERROR: {\"error\":{\"code\":\"invalid_json_schema\","
+        "\"message\":\"Missing required questions\"}}"
+    )
+
+    assert _classify_failure(stderr) is None
+
+
 @pytest.mark.asyncio
 async def test_authentication_error_is_not_retried() -> None:
     runner = FakeRunner(
