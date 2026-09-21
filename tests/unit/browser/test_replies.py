@@ -457,7 +457,30 @@ async def test_unmatched_target_beyond_room_limit_stays_pending_without_global_f
         project_summary="Synthetic",
         submitted_at=OBSERVED_AT,
     )
-    scan = await KarlancerReplyReader(clock=lambda: OBSERVED_AT, max_rooms=1).observe(
-        page, target
-    )
+    reader = KarlancerReplyReader(clock=lambda: OBSERVED_AT, max_rooms=1)
+    scan = await reader.observe(page, target)
     assert scan.matched_project is False
+    reader.begin_scan()
+    scan = await reader.observe(page, target)
+    assert scan.matched_project is True
+    assert scan.first_reply is not None
+    assert [event for event in page.events if event[0] == "click-room"] == [
+        ("click-room", 0), ("click-room", 1)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_room_batch_is_reported_as_failure():
+    class UnreadablePage(FakeMessagesPage):
+        async def wait_for_selector(self, selector: str, **kwargs: object) -> None:
+            if selector == "#messageBox app-room-messages:not(.d-none)":
+                raise PlaywrightTimeoutError("unreadable")
+
+    page = UnreadablePage(["<html></html>"])
+    target = ReplyWatchTarget(
+        project_id="11111111-1111-1111-1111-111111111111",
+        title="Synthetic", project_url=PROJECT_URL,
+        project_summary="Synthetic", submitted_at=OBSERVED_AT,
+    )
+    with pytest.raises(RuntimeError, match="no readable message rooms"):
+        await KarlancerReplyReader().observe(page, target)

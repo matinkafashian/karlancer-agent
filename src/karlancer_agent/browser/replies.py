@@ -147,13 +147,12 @@ class KarlancerReplyReader:
         self._max_rooms = max_rooms
         self._room_snapshots: list[tuple[str, str]] = []
         self._rooms_loaded = False
-        self._discovery_truncated = False
+        self._next_room_index = 0
 
     def begin_scan(self) -> None:
         """Share one room discovery across all targets in this polling cycle."""
         self._room_snapshots.clear()
         self._rooms_loaded = False
-        self._discovery_truncated = False
 
     async def observe(self, page: ReplyPage, target: ReplyWatchTarget) -> ConversationScan:
         for cached_url, html in self._room_snapshots:
@@ -170,12 +169,7 @@ class KarlancerReplyReader:
         if target.conversation_url is not None and _room_id(str(target.conversation_url)):
             direct_url = str(target.conversation_url)
             await page.goto(direct_url, wait_until="commit")
-            try:
-                snapshot = await self._snapshot(page, expected_room=_room_id(direct_url))
-            except PlaywrightTimeoutError:
-                # A stored room can disappear or redirect after Karlancer changes the
-                # conversation list. Fall back to a fresh read-only room discovery.
-                snapshot = None
+            snapshot = await self._snapshot(page, expected_room=_room_id(direct_url))
             if snapshot is not None:
                 room_url, html = snapshot
                 scan = parse_conversation(
@@ -200,11 +194,16 @@ class KarlancerReplyReader:
         )
         matched = None
         previous_snapshot = None
-        for index in range(self._max_rooms):
+        if self._next_room_index >= await page.locator(".room-item").count():
+            self._next_room_index = 0
+        start = self._next_room_index
+        for index in range(start, start + self._max_rooms):
             # Recount after each click: Angular may append already-loading rooms.
             if index >= await page.locator(".room-item").count():
+                self._next_room_index = 0
                 break
             await page.locator(".room-item").nth(index).click()
+            self._next_room_index = index + 1
             snapshot = await self._snapshot(page, previous=previous_snapshot)
             if snapshot is None:
                 continue
@@ -221,7 +220,10 @@ class KarlancerReplyReader:
             if scan.matched_project:
                 matched = scan
         self._rooms_loaded = True
-        self._discovery_truncated = await page.locator(".room-item").count() > self._max_rooms
+        if self._next_room_index >= await page.locator(".room-item").count():
+            self._next_room_index = 0
+        if previous_snapshot is None:
+            raise RuntimeError("no readable message rooms in discovery batch")
         if matched is not None:
             return matched
         # A target outside the bounded recent-room window is not proof of a

@@ -52,8 +52,9 @@ or rewrite submitted proposals to make them match the new template.
 If the public Telegram preview no longer overlaps the saved cursor, ingestion raises a history
 gap and does not advance the cursor. Backfill requires bounded manual investigation. No unverified
 pagination or scrolling selector was invented. Reply discovery uses stored room URLs first;
-an unmatched target past the known 30-room discovery bound raises an error rather than silently
-claiming full coverage. Hidden/unloaded historical rooms still require live-site verification.
+discovery advances through loaded rooms in batches of 30 across cycles, wrapping at the end.
+An unreadable batch raises an error. Hidden/unloaded historical rooms still require live-site
+verification, and replies outside the current batch may be delayed until their batch is scanned.
 
 Outbox checks continue during a global pause, but only for system errors and first replies. After
 three failed/uncertain delivery attempts inspect the outbox and actual Telegram conversation before
